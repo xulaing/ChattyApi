@@ -1,14 +1,8 @@
 {
   "version" : 2,
   "functions" : {
-    "chatty.js" : {
+    "api/chatty.js" : {
       "runtime" : "edge"
     }
-  },
-  "routes" : [
-    {
-      "src" : "/chatty",
-      "dest" : "chatty.js"
-    }
-  ]
+  }
 }
