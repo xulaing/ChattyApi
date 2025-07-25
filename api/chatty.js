@@ -1,21 +1,36 @@
 // api/chatty.js 
 export const config = {
-  runtime: 'edge', // this is a pre-requisite
+    runtime: 'edge', // this is a pre-requisite
+};
+
+const CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 export default async function handler(req, res) {
+    if (req.method === 'OPTIONS') {
+        return new Response(null, {
+            status: 204,
+            headers: CORS_HEADERS,
+        });
+    }
+
     if (req.method !== 'POST') {
-        return res.status(405).json({
-            error: 'Method not allowed'
+        return new Response(null, {
+            status: 405,
+            headers: CORS_HEADERS,
         });
     }
     const {
         prompt
-    } = req.body;
+    } = await req.json();
     const apiKey = process.env.OPENAI_API_KEY;
     if (!prompt || !apiKey) {
-        return res.status(400).json({
-            error: 'Prompt or API key missing'
+        return new Response(null, {
+            status: 400,
+            headers: CORS_HEADERS,
         });
     }
     try {
@@ -35,18 +50,22 @@ export default async function handler(req, res) {
         });
         const data = await openaiResponse.json();
         if (data.choices && data.choices.length > 0) {
-            return res.status(200).json({
-                response: data.choices[0].message.content
+            return new Response(JSON.stringify({
+                response: json.choices[0].messages.content
+            }), {
+                status: 204,
+                headers: CORS_HEADERS,
             });
         } else {
-            return res.status(500).json({
-                error: 'No response from OpenAI'
+            return new Response(null, {
+                status: 500,
+                headers: CORS_HEADERS,
             });
         }
     } catch (err) {
-        return res.status(500).json({
-            error: 'API error',
-            details: err.message
+        return new Response(null, {
+            status: 500,
+            headers: CORS_HEADERS,
         });
     }
 }
