@@ -1,5 +1,7 @@
 // api/chatty.js 
-export const runtime = 'edge'; // 'nodejs' is the default
+export const config = {
+  runtime: 'edge', // this is a pre-requisite
+};
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
