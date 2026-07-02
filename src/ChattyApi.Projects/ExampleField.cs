@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-using ChattyApi.Projects.Serialization;
 using ChattyApi.Projects.Values;
 
 namespace ChattyApi.Projects;
@@ -9,7 +7,6 @@ namespace ChattyApi.Projects;
 /// structure and can never change or be null; only the value is editable, and the
 /// value may be null.
 /// </summary>
-[JsonConverter(typeof(ExampleFieldJsonConverter))]
 public sealed class ExampleField
 {
     // Internal: instances are created from a ProjectSchema (ProjectExample.CreateFor)

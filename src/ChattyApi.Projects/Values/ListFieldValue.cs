@@ -1,5 +1,4 @@
 using System.Text.Json;
-using ChattyApi.Projects.Serialization;
 
 namespace ChattyApi.Projects.Values;
 
@@ -14,6 +13,8 @@ public sealed class ListFieldValue : FieldValue
 {
     /// <summary>The shared null (unset) list value.</summary>
     public static ListFieldValue Null { get; } = new(null);
+
+    private static readonly JsonSerializerOptions IndentedOptions = new() { WriteIndented = true };
 
     // Private: instances must go through Parse/ReadJson so RawJson is always
     // either null or a validated JSON array.
@@ -74,7 +75,7 @@ public sealed class ListFieldValue : FieldValue
         }
 
         // Re-indent so the text box shows nicely formatted JSON.
-        return new ListFieldValue(JsonText.FormatIndented(value));
+        return new ListFieldValue(JsonSerializer.Serialize(value, IndentedOptions));
     }
 
     internal override void WriteJson(Utf8JsonWriter writer)

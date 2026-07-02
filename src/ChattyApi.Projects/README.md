@@ -4,7 +4,8 @@ Model and JSON serialization layer for **Projects**: an expected output structur
 (a list of typed fields) plus a collection of input/output examples that conform
 to that structure.
 
-Built on `System.Text.Json` (no external dependencies), targeting `net8.0`.
+Built on `System.Text.Json` (no external dependencies), targeting `net7.0`
+(works unchanged on later versions — just bump the `TargetFramework`).
 
 ## Design overview
 
@@ -17,11 +18,11 @@ Built on `System.Text.Json` (no external dependencies), targeting `net8.0`.
 | `ProjectExample` | One example; created from a schema via `ProjectExample.CreateFor(schema)` / `schema.CreateExample()`. |
 | `Project` | Structure + examples. Enforces "every example matches the structure". |
 | `Values.FieldValue` (+ 5 subclasses) | Strongly typed value of an example field. Each subclass owns the JSON read/write rules for its type. |
-| `Serialization.*JsonConverter` | Custom converters, all built on the generic `JsonObjectConverter<T>` base to avoid duplicated boilerplate. |
-| `Serialization.ProjectJsonSerializer` | The facade: `Serialize(...)` / `DeserializeProject(...)` / `DeserializeSchema(...)` / `DeserializeExample(...)`. |
+| `Serialization.ProjectJsonSerializer` | The whole wire format in one file: `Serialize(...)` / `DeserializeProject(...)` / `DeserializeSchema(...)` / `DeserializeExample(...)`. |
 
-Validation is centralized in `Guard` (model side) and `JsonElementExtensions`
-(JSON side); every error message names the offending field, example or property.
+Validation is centralized in `Guard` (model side) and the serializer's private
+reading helpers (JSON side); every error message names the offending field,
+example or property.
 
 Errors surface as:
 

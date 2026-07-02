@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using ChattyApi.Projects;
 using ChattyApi.Projects.Serialization;
 using ChattyApi.Projects.Values;
@@ -83,9 +82,15 @@ public sealed class SerializationTests
         string? listText = restored.Examples[0].GetField("items").GetListText();
 
         Assert.NotNull(listText);
-        Assert.True(JsonNode.DeepEquals(
-            JsonNode.Parse("""[ { "id": 1 }, "two", 3 ]"""),
-            JsonNode.Parse(listText)));
+        Assert.Equal(
+            NormalizeJson("""[ { "id": 1 }, "two", 3 ]"""),
+            NormalizeJson(listText!));
+    }
+
+    private static string NormalizeJson(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return JsonSerializer.Serialize(document.RootElement);
     }
 
     [Fact]

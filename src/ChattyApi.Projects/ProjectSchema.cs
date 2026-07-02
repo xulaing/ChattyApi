@@ -1,13 +1,9 @@
-using System.Text.Json.Serialization;
-using ChattyApi.Projects.Serialization;
-
 namespace ChattyApi.Projects;
 
 /// <summary>
 /// The expected output structure of a project: an ordered collection of uniquely
 /// named <see cref="FieldDefinition"/>s. Immutable and always valid once constructed.
 /// </summary>
-[JsonConverter(typeof(ProjectSchemaJsonConverter))]
 public sealed class ProjectSchema
 {
     private readonly List<FieldDefinition> _fields;

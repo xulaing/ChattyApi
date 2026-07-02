@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-using ChattyApi.Projects.Serialization;
 using ChattyApi.Projects.Values;
 
 namespace ChattyApi.Projects;
@@ -8,7 +6,6 @@ namespace ChattyApi.Projects;
 /// One field of the expected output structure: a name, a type and a description.
 /// Immutable and always valid once constructed.
 /// </summary>
-[JsonConverter(typeof(FieldDefinitionJsonConverter))]
 public sealed class FieldDefinition
 {
     public FieldDefinition(string name, FieldType type, string description)

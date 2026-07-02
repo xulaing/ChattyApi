@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-using ChattyApi.Projects.Serialization;
 using ChattyApi.Projects.Values;
 
 namespace ChattyApi.Projects;
@@ -8,7 +6,6 @@ namespace ChattyApi.Projects;
 /// One input/output example. Its fields (names and types) mirror the project's
 /// expected output structure; the user only fills in the values.
 /// </summary>
-[JsonConverter(typeof(ProjectExampleJsonConverter))]
 public sealed class ProjectExample
 {
     private readonly List<ExampleField> _fields;

@@ -1,6 +1,3 @@
-using System.Text.Json.Serialization;
-using ChattyApi.Projects.Serialization;
-
 namespace ChattyApi.Projects;
 
 /// <summary>
@@ -8,7 +5,6 @@ namespace ChattyApi.Projects;
 /// all conform to that structure. The invariant "every example matches the
 /// structure" is enforced on construction and whenever an example is added.
 /// </summary>
-[JsonConverter(typeof(ProjectJsonConverter))]
 public sealed class Project
 {
     private readonly List<ProjectExample> _examples = new();
