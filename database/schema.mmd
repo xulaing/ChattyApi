@@ -1,0 +1,158 @@
+---
+title: Schéma BDD optimisé — 13 tables (au lieu de 28)
+---
+erDiagram
+    model {
+        bigint id PK
+        text name
+        model_type model_type "classification | segmentation | detection | extraction | decoupage"
+        text project_type
+        bigint associated_solution_id
+        text created_by
+        timestamptz created_at
+    }
+
+    model_version {
+        bigint id PK
+        bigint model_id FK
+        int version_nb "UNIQUE (model_id, version_nb)"
+        text algo
+        text model_path
+        text annotation_file
+        int train_data_count
+        int valid_data_count
+        text train_data_path
+        boolean is_itc
+        boolean in_prod "1 seule version in_prod par modèle"
+        text comment
+        text created_by
+        timestamptz created_at
+    }
+
+    training_run {
+        bigint id PK
+        bigint model_version_id FK
+        run_status status
+        timestamptz started_at
+        timestamptz ended_at
+        int epoch
+        int current_step
+        int total_step
+        text current_phase
+        jsonb classes
+        int image_size
+        text dataset_path
+        text output_path
+        text created_by
+        timestamptz created_at
+    }
+
+    test_run {
+        bigint id PK
+        bigint model_version_id FK
+        int test_data_count
+        text test_data_path
+        text test_results_path
+        text annotation_file
+        boolean is_itc
+        text comment
+        text created_by
+        timestamptz created_at
+    }
+
+    metric {
+        bigint id PK
+        bigint model_version_id FK
+        bigint test_run_id FK "NULL = métrique de validation"
+        metric_scope scope "validation | test"
+        text name "accuracy, f1, kappa, ap_bbox, ..."
+        double value
+    }
+
+    inference_request {
+        bigint id PK
+        model_type task_type
+        bigint model_version_id FK "nullable"
+        text doc_id
+        int status_code
+        text res_message
+        jsonb res_content
+        text end_status
+        timestamptz created_at
+    }
+
+    document_class {
+        bigint id PK
+        text name UK
+        text description
+        text created_by
+        timestamptz created_at
+        text updated_by
+        timestamptz updated_at
+    }
+
+    document_field {
+        bigint id PK
+        bigint document_class_id FK
+        text name "UNIQUE (document_class_id, name)"
+        text description
+        text created_by
+        timestamptz created_at
+        text updated_by
+        timestamptz updated_at
+    }
+
+    document_property {
+        bigint id PK
+        text name UK
+        text description
+        text created_by
+        timestamptz created_at
+        text updated_by
+        timestamptz updated_at
+    }
+
+    model_version_document_class {
+        bigint model_version_id PK, FK
+        bigint document_class_id PK, FK
+    }
+
+    model_version_document_field {
+        bigint model_version_id PK, FK
+        bigint document_field_id PK, FK
+    }
+
+    model_version_document_property {
+        bigint model_version_id PK, FK
+        bigint document_property_id PK, FK
+    }
+
+    document_request {
+        bigint id PK
+        text type
+        text name
+        text description
+        text status
+        text comment
+        text response
+        text created_by
+        timestamptz created_at
+        text updated_by
+        timestamptz updated_at
+    }
+
+    model ||--o{ model_version : "versionne"
+    model_version ||--o{ training_run : "entraînements"
+    model_version ||--o{ test_run : "tests / évaluations"
+    model_version ||--o{ metric : "métriques de validation"
+    test_run ||--o{ metric : "métriques de test"
+    model_version ||--o{ inference_request : "inférences"
+
+    document_class ||--o{ document_field : "contient"
+
+    model_version ||--o{ model_version_document_class : ""
+    document_class ||--o{ model_version_document_class : ""
+    model_version ||--o{ model_version_document_field : ""
+    document_field ||--o{ model_version_document_field : ""
+    model_version ||--o{ model_version_document_property : ""
+    document_property ||--o{ model_version_document_property : ""
