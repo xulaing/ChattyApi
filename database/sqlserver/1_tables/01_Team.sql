@@ -57,30 +57,37 @@ GO
 -- =======================================================
 -- 2. AJOUT DE CONTRAINTES (Si la table existe déjà)
 -- =======================================================
---PRINT 'Vérification et application des contraintes...'
---GO
---IF EXISTS (
---    SELECT 1 FROM sys.tables WHERE name = N'Team' AND schema_id = SCHEMA_ID('dbo')
---) BEGIN
---    -- Vérification de la contrainte par défaut
---    IF NOT EXISTS (
---        SELECT 1
---        FROM sys.default_constraints
---        WHERE parent_object_id = OBJECT_ID(N'[dbo].[Team]')
---        AND name = 'DF_Team_CanViewAll'
---    )
---    BEGIN
---        PRINT 'Ajout de la contrainte par défaut (CanViewAll = 0)...';
---        ALTER TABLE [dbo].[Team]
---        ADD CONSTRAINT [DF_Team_CanViewAll] DEFAULT ((0)) FOR [CanViewAll];
---        PRINT 'Contrainte [DF_Team_CanViewAll] ajoutée.';
---    END
---    ELSE
---    BEGIN
---        PRINT 'Contrainte par défaut [DF_Team_CanViewAll] existante.';
---    END
---END
---GO
+PRINT 'Vérification et application des contraintes...'
+GO
+IF EXISTS (
+    SELECT 1 FROM sys.tables WHERE name = N'Team' AND schema_id = SCHEMA_ID('dbo')
+) BEGIN
+    -- [CORRECTIF] default bit à 0, recherché par colonne ; un default existant au nom
+    --             auto-généré est renommé
+    DECLARE @df SYSNAME = NULL, @dfOld NVARCHAR(300);
+    SELECT @df = name
+    FROM sys.default_constraints
+    WHERE parent_object_id = OBJECT_ID(N'[dbo].[Team]')
+    AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Team]'), 'CanViewAll', 'ColumnId');
+    IF @df IS NULL
+    BEGIN
+        PRINT 'Ajout de la contrainte par défaut (CanViewAll = 0)...';
+        ALTER TABLE [dbo].[Team]
+        ADD CONSTRAINT [DF_Team_CanViewAll] DEFAULT ((0)) FOR [CanViewAll];
+        PRINT 'Contrainte [DF_Team_CanViewAll] ajoutée.';
+    END
+    ELSE IF @df <> N'DF_Team_CanViewAll'
+    BEGIN
+        SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+        EXEC sp_rename @dfOld, N'DF_Team_CanViewAll', N'OBJECT';
+        PRINT 'Contrainte par défaut ' + @df + ' renommée en [DF_Team_CanViewAll].';
+    END
+    ELSE
+    BEGIN
+        PRINT 'Contrainte par défaut [DF_Team_CanViewAll] existante.';
+    END
+END
+GO
 -- [RÉORGANISATION] L'insertion des équipes H620/H600/H500 est déplacée
 --                  dans 3_init/init_Team.sql
 PRINT '=== FIN DE LA MIGRATION [dbo].[Team] ==='

@@ -209,6 +209,47 @@ IF EXISTS (
     PRINT 'Colonne [DeliveredToProduction] convertie en bit.';
 END
 GO
+-- 2.7. [CORRECTIF] Defaults de [State] ('ONGOING') et [DeliveredToProduction] (0) garantis
+--      aussi quand la table est créée par le CREATE TABLE (qui n'en pose pas).
+--      Recherche par colonne ; un default existant au nom auto-généré est renommé.
+DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_Version]'), 'State', 'ColumnId');
+IF @df IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT DF_ProjectVersion_State DEFAULT 'ONGOING' FOR [State];
+    PRINT 'Default [State] ajouté.';
+END
+ELSE IF @df <> N'DF_ProjectVersion_State' BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_ProjectVersion_State', N'OBJECT';
+    PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_State].';
+END
+ELSE BEGIN
+    PRINT 'Default [State] existant.';
+END
+
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_Version]'), 'DeliveredToProduction', 'ColumnId');
+IF @df IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT DF_ProjectVersion_DeliveredToProduction DEFAULT 0 FOR [DeliveredToProduction];
+    PRINT 'Default [DeliveredToProduction] ajouté.';
+END
+ELSE IF @df <> N'DF_ProjectVersion_DeliveredToProduction' BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_ProjectVersion_DeliveredToProduction', N'OBJECT';
+    PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_DeliveredToProduction].';
+END
+ELSE BEGIN
+    PRINT 'Default [DeliveredToProduction] existant.';
+END
+GO
 -- [RÉORGANISATION] Les triggers de [Project_Version] sont dans 2_procedures/trg_Project_Version.sql
 PRINT '=== FIN DE LA MIGRATION [dbo].[Project_Version] ==='
 GO

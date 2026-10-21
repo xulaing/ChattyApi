@@ -69,20 +69,27 @@ GO
 IF EXISTS (
 SELECT 1 FROM sys.tables WHERE name = N'User' AND schema_id = SCHEMA_ID('dbo')
 ) BEGIN
----- 2.1. Ajout de la contrainte par défaut pour [IsAdmin]
---IF NOT EXISTS (
---    SELECT 1
---    FROM sys.default_constraints
---    WHERE parent_object_id = OBJECT_ID(N'[dbo].[User]')
---      AND name = 'DF_User_IsAdmin'
---) BEGIN
---    PRINT 'Ajout de la contrainte par défaut (IsAdmin = 0)...';
---    ALTER TABLE [dbo].[User] ADD CONSTRAINT [DF_User_IsAdmin] DEFAULT ((0)) FOR [IsAdmin];
---    PRINT 'Contrainte [DF_User_IsAdmin] ajoutée.';
---END
---ELSE BEGIN
---    PRINT 'Contrainte par défaut [DF_User_IsAdmin] existante.';
---END
+-- 2.1. Ajout de la contrainte par défaut pour [IsAdmin]
+-- [CORRECTIF] default bit à 0, recherché par colonne ; un default existant au nom
+--             auto-généré est renommé
+DECLARE @df SYSNAME = NULL, @dfOld NVARCHAR(300);
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[User]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[User]'), 'IsAdmin', 'ColumnId');
+IF @df IS NULL BEGIN
+    PRINT 'Ajout de la contrainte par défaut (IsAdmin = 0)...';
+    ALTER TABLE [dbo].[User] ADD CONSTRAINT [DF_User_IsAdmin] DEFAULT ((0)) FOR [IsAdmin];
+    PRINT 'Contrainte [DF_User_IsAdmin] ajoutée.';
+END
+ELSE IF @df <> N'DF_User_IsAdmin' BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_User_IsAdmin', N'OBJECT';
+    PRINT 'Contrainte par défaut ' + @df + ' renommée en [DF_User_IsAdmin].';
+END
+ELSE BEGIN
+    PRINT 'Contrainte par défaut [DF_User_IsAdmin] existante.';
+END
 
 -- 2.2. Ajout de la contrainte d'unicité sur PersoId
 IF NOT EXISTS (

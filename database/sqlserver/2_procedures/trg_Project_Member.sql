@@ -22,7 +22,8 @@ AFTER DELETE
 AS
 BEGIN
 SET NOCOUNT ON;
-DECLARE @DeleterId NVARCHAR(MAX) = CAST(SESSION_CONTEXT(N'DeleterId') AS NVARCHAR(MAX));
+-- [CORRECTIF] TRY_CAST en INT : une valeur non numérique donne NULL au lieu de faire échouer la suppression
+DECLARE @DeleterId INT = TRY_CAST(CAST(SESSION_CONTEXT(N'DeleterId') AS NVARCHAR(50)) AS INT);
 INSERT INTO Project_History (
      Id, ProjectId, Entity, EntityId, Action, EntityName, Message, OldValues, NewValues, UpdatedBy, UpdatedAt
 )

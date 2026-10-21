@@ -22,7 +22,8 @@ AFTER DELETE
 AS
 BEGIN
 SET NOCOUNT ON;
-DECLARE @DeleterId NVARCHAR(MAX) = CAST(SESSION_CONTEXT(N'DeleterId') AS NVARCHAR(MAX));
+-- [CORRECTIF] TRY_CAST en INT : une valeur non numérique donne NULL au lieu de faire échouer la suppression
+DECLARE @DeleterId INT = TRY_CAST(CAST(SESSION_CONTEXT(N'DeleterId') AS NVARCHAR(50)) AS INT);
 INSERT INTO Project_History (
    Id, ProjectId, Entity, EntityId, Action, EntityName, Message, OldValues, NewValues, UpdatedBy, UpdatedAt
 )
@@ -128,7 +129,7 @@ SELECT
                     WHEN i.State = 'BLOCKED' AND d.State <> 'BLOCKED'
                         THEN 'La version "' + ISNULL(i.Title, 'Sans titre') + '" (v' + CAST(i.VersionNumber AS NVARCHAR(10)) + ') a été verrouillée'
                     WHEN i.State = 'ARCHIVED' AND d.State <> 'ARCHIVED'
-                        THEN 'La version "' + ISNULL(i.Title, 'Sans titre') + '" (v' + CAST(i.VersionNumber AS NVARCHAR(10)) + ') a été archivée**'
+                        THEN 'La version "' + ISNULL(i.Title, 'Sans titre') + '" (v' + CAST(i.VersionNumber AS NVARCHAR(10)) + ') a été archivée'
                     WHEN i.State = 'ONGOING' AND d.State = 'BLOCKED'
                         THEN 'La version "' + ISNULL(i.Title, 'Sans titre') + '" (v' + CAST(i.VersionNumber AS NVARCHAR(10)) + ') a été déverrouillée'
                     WHEN i.State = 'ONGOING' AND d.State = 'ARCHIVED'

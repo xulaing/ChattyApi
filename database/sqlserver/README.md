@@ -23,7 +23,10 @@ chaque déplacement par `[RÉORGANISATION]`.
 
 | Script | Correctif |
 |---|---|
-| `03_Project` | Default de `CreatedAt` nommé dans le `CREATE TABLE` ; defaults recherchés par colonne (erreur 1781 « Column already has a DEFAULT ») |
-| `04_Project_History` | Defaults recherchés par colonne |
-| `05_Project_Version` | Passage de `ProjectId` en NOT NULL uniquement si nécessaire, avant la FK, FK retirée avant l'`ALTER` (erreur 5074) ; `DeliveredToProduction` ajoutée en `bit` au lieu de `nvarchar(max)` et convertie si déjà créée en nvarchar |
+| tous | Defaults recherchés **par colonne** (erreur 1781 « Column already has a DEFAULT ») ; un default existant au nom auto-généré (`DF__Project__Creat__XXXX`) est renommé au nom standard |
+| `01_Team`, `02_User` | Defaults bit à 0 : `DF_Team_CanViewAll`, `DF_User_IsAdmin` |
+| `03_Project` | Default de `CreatedAt` nommé dans le `CREATE TABLE` (`IsActive` garde son default à 1) |
+| `04_Project_History` | Suppression de `FK_ProjectHistory_Project` : elle empêchait toute suppression de projet (erreur 547). `EntityName` ajoutée en `varchar(25)`, alimentée pour les lignes existantes puis passée en NOT NULL |
+| `05_Project_Version` | `ProjectId` passé en NOT NULL uniquement si nécessaire, avant la FK, FK retirée avant l'`ALTER` (erreur 5074) ; `DeliveredToProduction` en `bit` (convertie si déjà créée en nvarchar) ; defaults `State` = `'ONGOING'` et `DeliveredToProduction` = 0 garantis |
 | `06_Project_Member` | Conversion `UserId` bigint → int : PK/FK retirées avant l'`ALTER` puis PK recréée (erreur 5074) ; `UpdatedBy` en `nvarchar(max)` au lieu de `nvarchar` (= 1 caractère), élargie si besoin |
+| `2_procedures/trg_*` | `DeleterId` lu avec `TRY_CAST` en int (une valeur non numérique ne fait plus échouer la suppression) ; `**` en trop retiré du message « archivée » |

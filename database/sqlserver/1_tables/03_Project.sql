@@ -79,30 +79,43 @@ END
 
 -- 2.3. Ajout des contraintes par défaut (Defaults)
 -- [CORRECTIF] recherche du default par COLONNE et non par nom : une colonne ne peut
---             avoir qu'un seul default, quel que soit son nom (sinon erreur 1781)
+--             avoir qu'un seul default, quel que soit son nom (sinon erreur 1781).
+--             Un default existant au nom auto-généré (DF__Project__Creat__XXXX) est renommé.
+DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+
 -- Pour IsActive
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.default_constraints
-    WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
-      AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'IsActive', 'ColumnId')
-) BEGIN
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'IsActive', 'ColumnId');
+IF @df IS NULL BEGIN
     ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_IsActive] DEFAULT 1 FOR [IsActive];
     PRINT 'Default [IsActive] ajouté.';
+END
+ELSE IF @df <> N'DF_Project_IsActive' BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_Project_IsActive', N'OBJECT';
+    PRINT 'Default ' + @df + ' renommé en [DF_Project_IsActive].';
 END
 ELSE BEGIN
     PRINT 'Default [IsActive] existant.';
 END
 
 -- Pour CreatedAt
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.default_constraints
-    WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
-      AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'CreatedAt', 'ColumnId')
-) BEGIN
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'CreatedAt', 'ColumnId');
+IF @df IS NULL BEGIN
     ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_CreatedAt] DEFAULT GETDATE() FOR [CreatedAt];
     PRINT 'Default [CreatedAt] ajouté.';
+END
+ELSE IF @df <> N'DF_Project_CreatedAt' BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_Project_CreatedAt', N'OBJECT';
+    PRINT 'Default ' + @df + ' renommé en [DF_Project_CreatedAt].';
 END
 ELSE BEGIN
     PRINT 'Default [CreatedAt] existant.';

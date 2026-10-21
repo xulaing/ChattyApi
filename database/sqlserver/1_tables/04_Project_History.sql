@@ -92,31 +92,46 @@ AND type in (N'U')
 BEGIN
 PRINT 'Vérification et application des contraintes sur [dbo].[Project_History]...';
 -- [CORRECTIF] 2.1 / 2.2 : recherche du default par COLONNE et non par nom
---             (une colonne ne peut avoir qu'un seul default, sinon erreur 1781)
+--             (une colonne ne peut avoir qu'un seul default, sinon erreur 1781).
+--             Un default existant au nom auto-généré est renommé.
+DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+
 -- 2.1. Contrainte par défaut pour Id (NEWID)
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.default_constraints
-    WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
-    AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'Id', 'ColumnId')
-)
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
+AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'Id', 'ColumnId');
+IF @df IS NULL
 BEGIN
     ALTER TABLE [dbo].[Project_History]
     ADD CONSTRAINT [DF_Project_History_Id] DEFAULT (NEWID()) FOR [Id];
     PRINT '  - Contrainte DF_Project_History_Id ajoutée.';
 END
+ELSE IF @df <> N'DF_Project_History_Id'
+BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_Project_History_Id', N'OBJECT';
+    PRINT '  - Contrainte ' + @df + ' renommée en DF_Project_History_Id.';
+END
 
 -- 2.2. Contrainte par défaut pour UpdatedAt (GETDATE)
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.default_constraints
-    WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
-    AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'UpdatedAt', 'ColumnId')
-)
+SET @df = NULL;
+SELECT @df = name
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
+AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'UpdatedAt', 'ColumnId');
+IF @df IS NULL
 BEGIN
     ALTER TABLE [dbo].[Project_History]
     ADD CONSTRAINT [DF_Project_History_UpdatedAt] DEFAULT (GETDATE()) FOR [UpdatedAt];
     PRINT '  - Contrainte DF_Project_History_UpdatedAt ajoutée.';
+END
+ELSE IF @df <> N'DF_Project_History_UpdatedAt'
+BEGIN
+    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+    EXEC sp_rename @dfOld, N'DF_Project_History_UpdatedAt', N'OBJECT';
+    PRINT '  - Contrainte ' + @df + ' renommée en DF_Project_History_UpdatedAt.';
 END
 
 -- 2.3. Clé étrangère vers User
@@ -133,18 +148,19 @@ BEGIN
     PRINT '  - Contrainte FK_ProjectHistory_User ajoutée.';
 END
 
--- 2.4. Clé étrangère vers Project (Correction ajoutée pour cohérence)
-IF NOT EXISTS (
+-- 2.4. [CORRECTIF] PAS de clé étrangère vers Project : l'historique doit survivre au projet.
+--      Avec cette FK, un projet ayant de l'historique ne peut pas être supprimé (erreur 547),
+--      et le trigger AFTER DELETE de [Project] insère une ligne pour un projet qui n'existe plus.
+--      On supprime donc la FK si elle a été créée par une version précédente.
+IF EXISTS (
     SELECT 1
     FROM sys.foreign_keys
     WHERE object_id = OBJECT_ID(N'[dbo].[FK_ProjectHistory_Project]')
     AND parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
 )
 BEGIN
-    ALTER TABLE [dbo].[Project_History] WITH CHECK ADD CONSTRAINT [FK_ProjectHistory_Project]
-        FOREIGN KEY([ProjectId]) REFERENCES [dbo].[Project] ([Id]);
-    ALTER TABLE [dbo].[Project_History] CHECK CONSTRAINT [FK_ProjectHistory_Project];
-    PRINT '  - Contrainte FK_ProjectHistory_Project ajoutée.';
+    ALTER TABLE [dbo].[Project_History] DROP CONSTRAINT [FK_ProjectHistory_Project];
+    PRINT '  - Contrainte FK_ProjectHistory_Project supprimée.';
 END
 
 -- 2.5. Check Constraints (Actions)
@@ -251,22 +267,43 @@ AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Proje
 BEGIN
 EXEC sp_rename '[dbo].[Project_History].[EntityName]', 'Entity', 'COLUMN';
 END
+-- [CORRECTIF] [EntityName] ajoutée avec le type du CREATE TABLE (varchar(25)), nullable
+--             le temps d'alimenter les lignes existantes (batch suivant), puis NOT NULL.
 IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Project_History') AND name = 'Entity')
 AND NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Project_History') AND name = 'EntityName')
 BEGIN
--- Vérifier si le type est déjà nvarchar
-DECLARE @currentType NVARCHAR(100);
-SELECT @currentType = TYPE_NAME(user_type_id)
-FROM sys.columns
-WHERE object_id = OBJECT_ID('dbo.Project_History') AND name = 'Entity';
-IF @currentType <> 'nvarchar'
-BEGIN
-    ALTER TABLE [dbo].[Project_History] ADD [EntityName] [nvarchar](25) NULL;
-END
-
+    ALTER TABLE [dbo].[Project_History] ADD [EntityName] [varchar](25) NULL;
+    PRINT '  - Colonne [EntityName] ajoutée.';
 END
 PRINT 'Table [dbo].[Project_History] vérifiée et mise à jour.';
 
+END
+GO
+-- [CORRECTIF] Alimentation de [EntityName] pour les lignes existantes, puis alignement
+--             sur le CREATE TABLE : varchar(25) NOT NULL.
+--             Batch séparé : la colonne existe forcément à la compilation.
+IF EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Project_History') AND name = 'EntityName')
+BEGIN
+UPDATE [dbo].[Project_History]
+SET [EntityName] = CASE [Entity]
+        WHEN 'Project'         THEN 'Projet'
+        WHEN 'Project_Version' THEN 'Version'
+        WHEN 'Project_Member'  THEN 'Utilisateur'
+        ELSE LEFT([Entity], 25)
+    END
+WHERE [EntityName] IS NULL;
+IF @@ROWCOUNT > 0
+    PRINT '  - Colonne [EntityName] alimentée pour les lignes existantes.';
+
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('dbo.Project_History') AND name = 'EntityName'
+    AND (is_nullable = 1 OR TYPE_NAME(system_type_id) <> 'varchar' OR max_length <> 25)
+)
+BEGIN
+    ALTER TABLE [dbo].[Project_History] ALTER COLUMN [EntityName] [varchar](25) NOT NULL;
+    PRINT '  - Colonne [EntityName] alignée en varchar(25) NOT NULL.';
+END
 END
 GO
 PRINT '=== FIN DE LA MIGRATION [dbo].[Project_History] ==='
