@@ -183,7 +183,7 @@ END
 GO
 -- 2.6. [CORRECTIF] Si [DeliveredToProduction] a déjà été créée en nvarchar(max) par l'ancien
 --      script, conversion en bit. Batch séparé : la colonne existe forcément à la compilation.
---      Le default est retiré avant l'ALTER (sinon erreur 5074) puis recréé.
+--      Le default est retiré avant l'ALTER (sinon erreur 5074) ; il est recréé à l'étape 2.7.
 IF EXISTS (
     SELECT 1
     FROM INFORMATION_SCHEMA.COLUMNS
@@ -204,50 +204,88 @@ IF EXISTS (
     IF @DropDf <> N'' EXEC sys.sp_executesql @DropDf;
 
     ALTER TABLE [dbo].[Project_Version] ALTER COLUMN [DeliveredToProduction] [bit] NOT NULL;
-    ALTER TABLE [dbo].[Project_Version]
-    ADD CONSTRAINT DF_ProjectVersion_DeliveredToProduction DEFAULT 0 FOR [DeliveredToProduction];
     PRINT 'Colonne [DeliveredToProduction] convertie en bit.';
 END
 GO
 -- 2.7. [CORRECTIF] Defaults de [State] ('ONGOING') et [DeliveredToProduction] (0) garantis
 --      aussi quand la table est créée par le CREATE TABLE (qui n'en pose pas).
 --      Recherche par colonne ; un default existant au nom auto-généré est renommé.
-DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
 
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
   AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_Version]'), 'State', 'ColumnId');
-IF @df IS NULL BEGIN
-    ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT DF_ProjectVersion_State DEFAULT 'ONGOING' FOR [State];
-    PRINT 'Default [State] ajouté.';
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'State') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project_Version].[State] absente, default [DF_ProjectVersion_State] non traité.';
 END
-ELSE IF @df <> N'DF_ProjectVersion_State' BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_ProjectVersion_State', N'OBJECT';
-    PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_State].';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_State]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_ProjectVersion_State] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT [DF_ProjectVersion_State] DEFAULT ('ONGOING') FOR [State];
+        PRINT 'Default [DF_ProjectVersion_State] ajouté.';
+    END
 END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
 ELSE BEGIN
-    PRINT 'Default [State] existant.';
+    IF @df <> N'DF_ProjectVersion_State' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_State]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_ProjectVersion_State] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_ProjectVersion_State', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_State].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_ProjectVersion_State] existant.';
+    END
+    IF @dfDef <> N'(''ONGOING'')' BEGIN
+        PRINT 'ATTENTION : le default de [Project_Version].[State] vaut ' + @dfDef + ' au lieu de (''ONGOING'') (conservé, à vérifier).';
+    END
 END
 
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
   AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_Version]'), 'DeliveredToProduction', 'ColumnId');
-IF @df IS NULL BEGIN
-    ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT DF_ProjectVersion_DeliveredToProduction DEFAULT 0 FOR [DeliveredToProduction];
-    PRINT 'Default [DeliveredToProduction] ajouté.';
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'DeliveredToProduction') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project_Version].[DeliveredToProduction] absente, default [DF_ProjectVersion_DeliveredToProduction] non traité.';
 END
-ELSE IF @df <> N'DF_ProjectVersion_DeliveredToProduction' BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_ProjectVersion_DeliveredToProduction', N'OBJECT';
-    PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_DeliveredToProduction].';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_DeliveredToProduction]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_ProjectVersion_DeliveredToProduction] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT [DF_ProjectVersion_DeliveredToProduction] DEFAULT ((0)) FOR [DeliveredToProduction];
+        PRINT 'Default [DF_ProjectVersion_DeliveredToProduction] ajouté.';
+    END
 END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
 ELSE BEGIN
-    PRINT 'Default [DeliveredToProduction] existant.';
+    IF @df <> N'DF_ProjectVersion_DeliveredToProduction' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_DeliveredToProduction]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_ProjectVersion_DeliveredToProduction] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_ProjectVersion_DeliveredToProduction', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_DeliveredToProduction].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_ProjectVersion_DeliveredToProduction] existant.';
+    END
+    IF @dfDef <> N'((0))' BEGIN
+        PRINT 'ATTENTION : le default de [Project_Version].[DeliveredToProduction] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
+    END
 END
 GO
 -- [RÉORGANISATION] Les triggers de [Project_Version] sont dans 2_procedures/trg_Project_Version.sql

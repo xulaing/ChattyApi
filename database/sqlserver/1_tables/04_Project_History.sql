@@ -94,44 +94,84 @@ PRINT 'Vérification et application des contraintes sur [dbo].[Project_History].
 -- [CORRECTIF] 2.1 / 2.2 : recherche du default par COLONNE et non par nom
 --             (une colonne ne peut avoir qu'un seul default, sinon erreur 1781).
 --             Un default existant au nom auto-généré est renommé.
-DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
 
 -- 2.1. Contrainte par défaut pour Id (NEWID)
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
-AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'Id', 'ColumnId');
-IF @df IS NULL
-BEGIN
-    ALTER TABLE [dbo].[Project_History]
-    ADD CONSTRAINT [DF_Project_History_Id] DEFAULT (NEWID()) FOR [Id];
-    PRINT '  - Contrainte DF_Project_History_Id ajoutée.';
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'Id', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Project_History]', N'Id') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project_History].[Id] absente, default [DF_Project_History_Id] non traité.';
 END
-ELSE IF @df <> N'DF_Project_History_Id'
-BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_Project_History_Id', N'OBJECT';
-    PRINT '  - Contrainte ' + @df + ' renommée en DF_Project_History_Id.';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Project_History_Id]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Project_History_Id] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_History] ADD CONSTRAINT [DF_Project_History_Id] DEFAULT (newid()) FOR [Id];
+        PRINT 'Default [DF_Project_History_Id] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_Project_History_Id' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Project_History_Id]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Project_History_Id] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Project_History_Id', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Project_History_Id].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Project_History_Id] existant.';
+    END
+    IF @dfDef <> N'(newid())' BEGIN
+        PRINT 'ATTENTION : le default de [Project_History].[Id] vaut ' + @dfDef + ' au lieu de (newid()) (conservé, à vérifier).';
+    END
 END
 
 -- 2.2. Contrainte par défaut pour UpdatedAt (GETDATE)
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_History]')
-AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'UpdatedAt', 'ColumnId');
-IF @df IS NULL
-BEGIN
-    ALTER TABLE [dbo].[Project_History]
-    ADD CONSTRAINT [DF_Project_History_UpdatedAt] DEFAULT (GETDATE()) FOR [UpdatedAt];
-    PRINT '  - Contrainte DF_Project_History_UpdatedAt ajoutée.';
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_History]'), 'UpdatedAt', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Project_History]', N'UpdatedAt') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project_History].[UpdatedAt] absente, default [DF_Project_History_UpdatedAt] non traité.';
 END
-ELSE IF @df <> N'DF_Project_History_UpdatedAt'
-BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_Project_History_UpdatedAt', N'OBJECT';
-    PRINT '  - Contrainte ' + @df + ' renommée en DF_Project_History_UpdatedAt.';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Project_History_UpdatedAt]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Project_History_UpdatedAt] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_History] ADD CONSTRAINT [DF_Project_History_UpdatedAt] DEFAULT (getdate()) FOR [UpdatedAt];
+        PRINT 'Default [DF_Project_History_UpdatedAt] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_Project_History_UpdatedAt' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Project_History_UpdatedAt]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Project_History_UpdatedAt] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Project_History_UpdatedAt', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Project_History_UpdatedAt].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Project_History_UpdatedAt] existant.';
+    END
+    IF @dfDef <> N'(getdate())' BEGIN
+        PRINT 'ATTENTION : le default de [Project_History].[UpdatedAt] vaut ' + @dfDef + ' au lieu de (getdate()) (conservé, à vérifier).';
+    END
 END
 
 -- 2.3. Clé étrangère vers User

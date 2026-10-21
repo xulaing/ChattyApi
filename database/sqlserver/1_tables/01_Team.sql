@@ -64,27 +64,43 @@ IF EXISTS (
 ) BEGIN
     -- [CORRECTIF] default bit à 0, recherché par colonne ; un default existant au nom
     --             auto-généré est renommé
-    DECLARE @df SYSNAME = NULL, @dfOld NVARCHAR(300);
-    SELECT @df = name
+    DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+    SET @df = NULL; SET @dfDef = NULL;
+    SELECT @df = name, @dfDef = definition
     FROM sys.default_constraints
     WHERE parent_object_id = OBJECT_ID(N'[dbo].[Team]')
-    AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Team]'), 'CanViewAll', 'ColumnId');
-    IF @df IS NULL
-    BEGIN
-        PRINT 'Ajout de la contrainte par défaut (CanViewAll = 0)...';
-        ALTER TABLE [dbo].[Team]
-        ADD CONSTRAINT [DF_Team_CanViewAll] DEFAULT ((0)) FOR [CanViewAll];
-        PRINT 'Contrainte [DF_Team_CanViewAll] ajoutée.';
+      AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Team]'), 'CanViewAll', 'ColumnId');
+    IF COL_LENGTH(N'[dbo].[Team]', N'CanViewAll') IS NULL BEGIN
+        PRINT 'ATTENTION : colonne [Team].[CanViewAll] absente, default [DF_Team_CanViewAll] non traité.';
     END
-    ELSE IF @df <> N'DF_Team_CanViewAll'
-    BEGIN
-        SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-        EXEC sp_rename @dfOld, N'DF_Team_CanViewAll', N'OBJECT';
-        PRINT 'Contrainte par défaut ' + @df + ' renommée en [DF_Team_CanViewAll].';
+    -- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+    ELSE IF @df IS NULL BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Team_CanViewAll]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : le nom [DF_Team_CanViewAll] est déjà utilisé par un autre objet, default non créé.';
+        END
+        ELSE BEGIN
+            ALTER TABLE [dbo].[Team] ADD CONSTRAINT [DF_Team_CanViewAll] DEFAULT ((0)) FOR [CanViewAll];
+            PRINT 'Default [DF_Team_CanViewAll] ajouté.';
+        END
     END
-    ELSE
-    BEGIN
-        PRINT 'Contrainte par défaut [DF_Team_CanViewAll] existante.';
+    -- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+    ELSE BEGIN
+        IF @df <> N'DF_Team_CanViewAll' BEGIN
+            IF OBJECT_ID(N'[dbo].[DF_Team_CanViewAll]') IS NOT NULL BEGIN
+                PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Team_CanViewAll] est déjà utilisé par un autre objet.';
+            END
+            ELSE BEGIN
+                SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+                EXEC sp_rename @dfOld, N'DF_Team_CanViewAll', N'OBJECT';
+                PRINT 'Default ' + @df + ' renommé en [DF_Team_CanViewAll].';
+            END
+        END
+        ELSE BEGIN
+            PRINT 'Default [DF_Team_CanViewAll] existant.';
+        END
+        IF @dfDef <> N'((0))' BEGIN
+            PRINT 'ATTENTION : le default de [Team].[CanViewAll] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
+        END
     END
 END
 GO

@@ -72,23 +72,43 @@ SELECT 1 FROM sys.tables WHERE name = N'User' AND schema_id = SCHEMA_ID('dbo')
 -- 2.1. Ajout de la contrainte par défaut pour [IsAdmin]
 -- [CORRECTIF] default bit à 0, recherché par colonne ; un default existant au nom
 --             auto-généré est renommé
-DECLARE @df SYSNAME = NULL, @dfOld NVARCHAR(300);
-SELECT @df = name
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[User]')
   AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[User]'), 'IsAdmin', 'ColumnId');
-IF @df IS NULL BEGIN
-    PRINT 'Ajout de la contrainte par défaut (IsAdmin = 0)...';
-    ALTER TABLE [dbo].[User] ADD CONSTRAINT [DF_User_IsAdmin] DEFAULT ((0)) FOR [IsAdmin];
-    PRINT 'Contrainte [DF_User_IsAdmin] ajoutée.';
+IF COL_LENGTH(N'[dbo].[User]', N'IsAdmin') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [User].[IsAdmin] absente, default [DF_User_IsAdmin] non traité.';
 END
-ELSE IF @df <> N'DF_User_IsAdmin' BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_User_IsAdmin', N'OBJECT';
-    PRINT 'Contrainte par défaut ' + @df + ' renommée en [DF_User_IsAdmin].';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_User_IsAdmin]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_User_IsAdmin] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[User] ADD CONSTRAINT [DF_User_IsAdmin] DEFAULT ((0)) FOR [IsAdmin];
+        PRINT 'Default [DF_User_IsAdmin] ajouté.';
+    END
 END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
 ELSE BEGIN
-    PRINT 'Contrainte par défaut [DF_User_IsAdmin] existante.';
+    IF @df <> N'DF_User_IsAdmin' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_User_IsAdmin]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_User_IsAdmin] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_User_IsAdmin', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_User_IsAdmin].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_User_IsAdmin] existant.';
+    END
+    IF @dfDef <> N'((0))' BEGIN
+        PRINT 'ATTENTION : le default de [User].[IsAdmin] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
+    END
 END
 
 -- 2.2. Ajout de la contrainte d'unicité sur PersoId

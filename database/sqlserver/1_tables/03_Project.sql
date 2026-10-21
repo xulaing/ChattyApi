@@ -20,8 +20,9 @@ CREATE TABLE [dbo].[Project](
     [ProjectType] [nvarchar](max) NULL,
     [Description] [nvarchar](max) NULL,
     [IsActive] [bit] NOT NULL,
-    -- [CORRECTIF] default nommé : un DEFAULT anonyme crée une contrainte DF__Project__Creat__XXXX
-    [CreatedAt] [datetime2](7) NOT NULL CONSTRAINT [DF_Project_CreatedAt] DEFAULT GETDATE(),
+    -- [CORRECTIF] pas de DEFAULT inline (il créerait une contrainte anonyme DF__Project__Creat__XXXX) :
+    --             le default [DF_Project_CreatedAt] est posé à l'étape 2.3, comme celui de [IsActive]
+    [CreatedAt] [datetime2](7) NOT NULL,
     [CreatedBy] [nvarchar](max) NULL,
     [UpdatedBy] [nvarchar](max) NULL,
     CONSTRAINT [PK_Project] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (
@@ -81,44 +82,84 @@ END
 -- [CORRECTIF] recherche du default par COLONNE et non par nom : une colonne ne peut
 --             avoir qu'un seul default, quel que soit son nom (sinon erreur 1781).
 --             Un default existant au nom auto-généré (DF__Project__Creat__XXXX) est renommé.
-DECLARE @df SYSNAME, @dfOld NVARCHAR(300);
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
 
 -- Pour IsActive
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
   AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'IsActive', 'ColumnId');
-IF @df IS NULL BEGIN
-    ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_IsActive] DEFAULT 1 FOR [IsActive];
-    PRINT 'Default [IsActive] ajouté.';
+IF COL_LENGTH(N'[dbo].[Project]', N'IsActive') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project].[IsActive] absente, default [DF_Project_IsActive] non traité.';
 END
-ELSE IF @df <> N'DF_Project_IsActive' BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_Project_IsActive', N'OBJECT';
-    PRINT 'Default ' + @df + ' renommé en [DF_Project_IsActive].';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Project_IsActive]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Project_IsActive] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_IsActive] DEFAULT ((1)) FOR [IsActive];
+        PRINT 'Default [DF_Project_IsActive] ajouté.';
+    END
 END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
 ELSE BEGIN
-    PRINT 'Default [IsActive] existant.';
+    IF @df <> N'DF_Project_IsActive' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Project_IsActive]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Project_IsActive] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Project_IsActive', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Project_IsActive].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Project_IsActive] existant.';
+    END
+    IF @dfDef <> N'((1))' BEGIN
+        PRINT 'ATTENTION : le default de [Project].[IsActive] vaut ' + @dfDef + ' au lieu de ((1)) (conservé, à vérifier).';
+    END
 END
 
 -- Pour CreatedAt
-SET @df = NULL;
-SELECT @df = name
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
 WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
   AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'CreatedAt', 'ColumnId');
-IF @df IS NULL BEGIN
-    ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_CreatedAt] DEFAULT GETDATE() FOR [CreatedAt];
-    PRINT 'Default [CreatedAt] ajouté.';
+IF COL_LENGTH(N'[dbo].[Project]', N'CreatedAt') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project].[CreatedAt] absente, default [DF_Project_CreatedAt] non traité.';
 END
-ELSE IF @df <> N'DF_Project_CreatedAt' BEGIN
-    SET @dfOld = N'[dbo].' + QUOTENAME(@df);
-    EXEC sp_rename @dfOld, N'DF_Project_CreatedAt', N'OBJECT';
-    PRINT 'Default ' + @df + ' renommé en [DF_Project_CreatedAt].';
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Project_CreatedAt]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Project_CreatedAt] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_CreatedAt] DEFAULT (getdate()) FOR [CreatedAt];
+        PRINT 'Default [DF_Project_CreatedAt] ajouté.';
+    END
 END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
 ELSE BEGIN
-    PRINT 'Default [CreatedAt] existant.';
+    IF @df <> N'DF_Project_CreatedAt' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Project_CreatedAt]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Project_CreatedAt] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Project_CreatedAt', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Project_CreatedAt].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Project_CreatedAt] existant.';
+    END
+    IF @dfDef <> N'(getdate())' BEGIN
+        PRINT 'ATTENTION : le default de [Project].[CreatedAt] vaut ' + @dfDef + ' au lieu de (getdate()) (conservé, à vérifier).';
+    END
 END
 
 END
