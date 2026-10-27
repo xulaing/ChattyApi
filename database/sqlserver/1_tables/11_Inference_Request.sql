@@ -8,8 +8,31 @@ GO
 -- [FUSION ML] Remplace : Classification_Test, Segmentation_Test, Detection_Test, Extraction_Test, Decoupage_Test (5 tables identiques)
 -- [TaskType] est conservé même si la version le connaît : les inférences historiques
 -- n'ont pas de version (ProjectVersionId NULL).
--- Table à forte volumétrie : clé bigint, index sur DocId et (TaskType, CreatedAt).
+-- Table à forte volumétrie : index sur DocId et (TaskType, CreatedAt).
 -- Supprimer une version conserve ses inférences (ON DELETE SET NULL).
+-- [Id] en uniqueidentifier : identifiant de corrélation avec le service d'inférence et
+-- renvoyé au client (non devinable, générable avant l'insertion). Table de traces,
+-- comme [Project_History] qui est déjà en uniqueidentifier.
+-- Valeur par défaut NEWSEQUENTIALID() : GUID croissants, donc pas de fragmentation
+-- de l'index cluster quand la base génère l'identifiant.
+-- =======================================================
+-- 0. [GUID] TABLE CRÉÉE PAR UNE VERSION PRÉCÉDENTE AVEC UN [Id] NUMÉRIQUE
+--    Vide : elle est supprimée puis recréée en section 1 (aucune table ne la référence).
+--    Non vide : arrêt, la conversion des données doit être décidée manuellement.
+-- =======================================================
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'[dbo].[Inference_Request]') AND name = N'Id'
+      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+) BEGIN
+    IF EXISTS (SELECT 1 FROM [dbo].[Inference_Request]) BEGIN
+        RAISERROR ('ERREUR CRITIQUE : [Inference_Request] contient des données avec un [Id] numérique. Conversion en uniqueidentifier à traiter manuellement.', 16, 1);
+        RETURN;
+    END
+    DROP TABLE [dbo].[Inference_Request];
+    PRINT 'Table [dbo].[Inference_Request] (Id numérique, vide) supprimée pour être recréée avec un Id uniqueidentifier.';
+END
+GO
 -- =======================================================
 -- 1. CRÉATION DE LA TABLE (Si elle n'existe pas)
 --    Clé primaire seule : défauts, clés étrangères, contrôles et index
@@ -23,7 +46,7 @@ AND type in (N'U')
 ) BEGIN
 PRINT 'Création de la table [dbo].[Inference_Request]...';
 CREATE TABLE [dbo].[Inference_Request](
-    [Id] [bigint] IDENTITY(1, 1) NOT NULL,
+    [Id] [uniqueidentifier] NOT NULL,
     [TaskType] [varchar](20) NOT NULL,
     [ProjectVersionId] [int] NULL,
     [DocId] [nvarchar](200) NOT NULL,
@@ -44,6 +67,43 @@ GO
 -- 2. CONTRAINTES, INDEX ET DESCRIPTION
 -- =======================================================
 DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Inference_Request]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Inference_Request]'), 'Id', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Inference_Request]', N'Id') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Inference_Request].[Id] absente, default [DF_InferenceRequest_Id] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_InferenceRequest_Id]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_InferenceRequest_Id] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Inference_Request] ADD CONSTRAINT [DF_InferenceRequest_Id] DEFAULT (newsequentialid()) FOR [Id];
+        PRINT 'Default [DF_InferenceRequest_Id] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_InferenceRequest_Id' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_InferenceRequest_Id]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_InferenceRequest_Id] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_InferenceRequest_Id', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_InferenceRequest_Id].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_InferenceRequest_Id] existant.';
+    END
+    IF @dfDef <> N'(newsequentialid())' BEGIN
+        PRINT 'ATTENTION : le default de [Inference_Request].[Id] vaut ' + @dfDef + ' au lieu de (newsequentialid()) (conservé, à vérifier).';
+    END
+END
 SET @df = NULL; SET @dfDef = NULL;
 SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints

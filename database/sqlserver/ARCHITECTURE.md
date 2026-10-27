@@ -35,7 +35,7 @@ relevés, et leur correction dans la version SQL Server :
 | 5 | Index unique filtré « une seule version en prod » | Incompatible avec le trigger existant : l'`UPDATE` qui flague la nouvelle version échouerait avant que le trigger ne déflague l'ancienne. La règle reste portée par `trg_ProjectVersion_Update`. |
 | 6 | `project_type` retypé en `ENUM` | Cette colonne contient le texte libre des projets LLM, qui serait perdu. Elle est conservée telle quelle ; on ajoute `Category` (LLM / MODEL) et `TaskType` (ex-`model_type`). |
 | 7 | `TEXT` partout | Types bornés (`nvarchar(50/100/200)`, `varchar(n)` pour les codes) là où on indexe, compare ou impose l'unicité ; `nvarchar(max)` réservé aux textes libres et aux chemins. |
-| 8 | Clés `BIGINT` | Les FK doivent avoir le même type que la clé visée : `int`, comme `Project` et `Project_Version`. `bigint` est gardé pour `Inference_Request` (volumétrie). |
+| 8 | Clés `BIGINT` | Les FK doivent avoir le même type que la clé visée : `int`, comme `Project` et `Project_Version`. `uniqueidentifier` pour `Training_Run` et `Inference_Request` (voir section 2.1). |
 | 9 | `ON DELETE CASCADE` partout | Cascade seulement pour les données possédées par la version (métriques, entraînements, associations). `SET NULL` pour les inférences, qui gardent leur trace. Aucune action pour les évaluations : pas de suppression silencieuse de résultats. |
 | 10 | Clés étrangères non indexées (SQL Server ne le fait pas automatiquement) | Index explicites sur toutes les colonnes de FK et sur les colonnes de recherche (`DocId`, `TaskType + CreatedAt`). |
 | 11 | `JSONB` | `nvarchar(max)` + contrainte `ISJSON`. |
@@ -113,7 +113,7 @@ erDiagram
         float Value
     }
     Training_Run {
-        int Id PK
+        uniqueidentifier Id PK
         int ProjectVersionId FK
         varchar StatusCode FK
         datetime2 StartedAt
@@ -121,7 +121,7 @@ erDiagram
         nvarchar Classes "JSON"
     }
     Inference_Request {
-        bigint Id PK
+        uniqueidentifier Id PK
         varchar TaskType FK
         int ProjectVersionId FK "nullable"
         nvarchar DocId
@@ -138,6 +138,30 @@ erDiagram
 triggers d'historique tracent automatiquement les nouvelles colonnes, car ils
 sérialisent la ligne entière en JSON. `Document_Request` est une table
 indépendante.
+
+### 2.1 Identifiants : `int` ou `uniqueidentifier` (GUID) ?
+
+Un GUID est pertinent quand l'identifiant est généré ou utilisé **hors de la
+base** : connu avant l'insertion, partagé avec un autre système, exposé à un
+client, ou fusionné depuis plusieurs sources. Dans les autres cas, un `int`
+est plus compact (4 octets contre 16, dans chaque index et chaque clé
+étrangère), plus lisible, et ne fragmente pas l'index cluster.
+
+| Table | Clé | Justification |
+|---|---|---|
+| `Training_Run` | **GUID** | Identifiant partagé avec le pipeline d'entraînement (dossiers de sortie, logs), qui peut le générer avant l'insertion. |
+| `Inference_Request` | **GUID** | Identifiant de corrélation avec le service d'inférence, renvoyé au client (non devinable). Table de traces, comme `Project_History`, déjà en GUID. |
+| `Project_History` | GUID (existant) | Inchangé. |
+| `Team`, `User`, `Project`, `Project_Version`, `Evaluation` | `int` (existant) | Passer en GUID casserait le contrat avec l'application existante (identifiants dans l'API et le code), ainsi que les triggers (`Project_History.EntityId`, `UpdatedBy` et `DeleterId` en `int`) et la procédure. Il faudrait aussi réécrire toutes les FK et migrer les données, pour aucun gain : ces identifiants sont générés et utilisés uniquement par la base. |
+| `Document_Class`, `Document_Field`, `Document_Property`, `Document_Request` | `int` | Référentiel interne, très joint, sans génération externe. Cohérent avec `Project`. |
+| `Ref_*` | code `varchar` | Clé naturelle lisible (`'DETECTION'`, `'F1'`). |
+| Métriques, associations | clé composite | Pas d'identifiant technique : la paire de clés étrangères est la clé. |
+
+Les GUID ont pour défaut `NEWSEQUENTIALID()` : les valeurs générées par la base
+sont croissantes, ce qui évite la fragmentation de l'index cluster. Un GUID
+fourni par l'application (`NEWID()`, `Guid.NewGuid()`) est aléatoire : sur
+`Inference_Request`, à forte volumétrie, mieux vaut laisser la base le générer
+(et le récupérer avec `OUTPUT inserted.Id`).
 
 ### Tables ajoutées
 

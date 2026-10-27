@@ -8,6 +8,29 @@ GO
 -- [FUSION ML] Remplace : TrainTrack, SegmentationTrainTrack, DetectionTrainTrack, ExtractionTrainTrack
 -- [StatusCode] contrôlé par [Ref_RunStatus] (ex-ENUM run_status).
 -- [Classes] : liste JSON des classes entraînées (contrôlée par ISJSON).
+-- [Id] en uniqueidentifier : l'identifiant d'un entraînement est partagé avec le pipeline
+-- d'entraînement (dossiers de sortie, logs, suivi). Il peut être généré par le pipeline
+-- avant l'insertion, sans aller-retour en base.
+-- Valeur par défaut NEWSEQUENTIALID() : GUID croissants, donc pas de fragmentation
+-- de l'index cluster quand la base génère l'identifiant.
+-- =======================================================
+-- 0. [GUID] TABLE CRÉÉE PAR UNE VERSION PRÉCÉDENTE AVEC UN [Id] NUMÉRIQUE
+--    Vide : elle est supprimée puis recréée en section 1 (aucune table ne la référence).
+--    Non vide : arrêt, la conversion des données doit être décidée manuellement.
+-- =======================================================
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'[dbo].[Training_Run]') AND name = N'Id'
+      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+) BEGIN
+    IF EXISTS (SELECT 1 FROM [dbo].[Training_Run]) BEGIN
+        RAISERROR ('ERREUR CRITIQUE : [Training_Run] contient des données avec un [Id] numérique. Conversion en uniqueidentifier à traiter manuellement.', 16, 1);
+        RETURN;
+    END
+    DROP TABLE [dbo].[Training_Run];
+    PRINT 'Table [dbo].[Training_Run] (Id numérique, vide) supprimée pour être recréée avec un Id uniqueidentifier.';
+END
+GO
 -- =======================================================
 -- 1. CRÉATION DE LA TABLE (Si elle n'existe pas)
 --    Clé primaire seule : défauts, clés étrangères, contrôles et index
@@ -21,7 +44,7 @@ AND type in (N'U')
 ) BEGIN
 PRINT 'Création de la table [dbo].[Training_Run]...';
 CREATE TABLE [dbo].[Training_Run](
-    [Id] [int] IDENTITY(1, 1) NOT NULL,
+    [Id] [uniqueidentifier] NOT NULL,
     [ProjectVersionId] [int] NOT NULL,
     [StatusCode] [varchar](20) NOT NULL,
     [StartedAt] [datetime2](7) NULL,
@@ -48,6 +71,43 @@ GO
 -- 2. CONTRAINTES, INDEX ET DESCRIPTION
 -- =======================================================
 DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Training_Run]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Training_Run]'), 'Id', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Training_Run]', N'Id') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Training_Run].[Id] absente, default [DF_TrainingRun_Id] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_TrainingRun_Id]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_TrainingRun_Id] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Training_Run] ADD CONSTRAINT [DF_TrainingRun_Id] DEFAULT (newsequentialid()) FOR [Id];
+        PRINT 'Default [DF_TrainingRun_Id] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_TrainingRun_Id' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_TrainingRun_Id]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_TrainingRun_Id] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_TrainingRun_Id', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_TrainingRun_Id].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_TrainingRun_Id] existant.';
+    END
+    IF @dfDef <> N'(newsequentialid())' BEGIN
+        PRINT 'ATTENTION : le default de [Training_Run].[Id] vaut ' + @dfDef + ' au lieu de (newsequentialid()) (conservé, à vérifier).';
+    END
+END
 SET @df = NULL; SET @dfDef = NULL;
 SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints
