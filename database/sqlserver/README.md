@@ -7,11 +7,18 @@ base déjà livrée.
 
 1. **`1_tables/`** — un script par table, **dans l'ordre des préfixes numériques**
    (les clés étrangères exigent que la table référencée existe déjà) :
-   `01_Team` → `02_User` → `03_Project` → `04_Project_History` →
-   `05_Project_Version` → `06_Project_Member` → `07_Evaluation`
-2. **`2_procedures/`** — triggers (et procédures de l'application). Exécutés
+   - `00_Ref_*` — tables de référence (remplacent les ENUM), avec leurs valeurs
+   - `01_Team` → `02_User` → `03_Project` → `04_Project_History` →
+     `05_Project_Version` → `06_Project_Member` → `07_Evaluation`
+   - `08` à `18` — tables des modèles entraînés (métriques, entraînements,
+     inférences, référentiel documentaire, demandes)
+2. **`2_procedures/`** — triggers et procédures de l'application. Exécutés
    après toutes les tables, car ils écrivent dans `Project_History` et lisent `User`.
 3. **`3_init/`** — données d'initialisation (équipes H620, H600, H500).
+
+**Fusion LLM / modèles entraînés** : voir [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+(revue du schéma, modèle fusionné, correspondances, impacts, points ouverts).
+Les ajouts sont signalés dans le code par `[FUSION ML]`.
 
 Exécuter avec `sqlcmd -b` (ou SSMS en mode SQLCMD avec `:on error exit`) pour
 arrêter le déploiement à la première erreur.

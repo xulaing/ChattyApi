@@ -27,6 +27,14 @@ CREATE TABLE [dbo].[Project_Version](
     [Title] [nvarchar](50) NULL,
     [DeliveredToProduction] [bit] NOT NULL,
     [State] nvarchar(max) NOT NULL,
+    -- [FUSION ML] colonnes issues de l'ancienne table model_version (voir section 3)
+    [Algo] [nvarchar](100) NULL,
+    [ModelPath] [nvarchar](max) NULL,
+    [AnnotationFile] [nvarchar](max) NULL,
+    [TrainDataPath] [nvarchar](max) NULL,
+    [TrainDataCount] [int] NULL,
+    [ValidDataCount] [int] NULL,
+    [IsItc] [bit] NOT NULL,
     CONSTRAINT [PK_Project_Version] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (
         PAD_INDEX = OFF,
         STATISTICS_NORECOMPUTE = OFF,
@@ -287,6 +295,164 @@ ELSE BEGIN
         PRINT 'ATTENTION : le default de [Project_Version].[DeliveredToProduction] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
     END
 END
+GO
+-- =======================================================
+-- 3. [FUSION ML] VERSIONS LLM ET VERSIONS DE MODÈLES DANS LA MÊME TABLE
+--    L'ancienne table model_version est absorbée par [Project_Version] :
+--      model_version.version_nb       -> [VersionNumber]          (existant)
+--      model_version.comment          -> [Description]            (existant)
+--      model_version.in_prod          -> [DeliveredToProduction]  (existant : même
+--                                        règle « une seule version en prod par projet »,
+--                                        déjà appliquée par trg_ProjectVersion_Update)
+--      model_version.created_by/at    -> [CreatedBy] / [CreatedAt] (existants)
+--      algo, model_path, annotation_file, train_data_path,
+--      train_data_count, valid_data_count, is_itc -> nouvelles colonnes ci-dessous
+--                                        (NULL pour les versions LLM)
+--    Les métriques de validation (ex-colonnes Accuracy, f1_score, kappa...) sont
+--    stockées en lignes dans [Project_Version_Metric].
+-- =======================================================
+PRINT 'Vérification des colonnes de fusion ML...'
+GO
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'Algo') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [Algo] [nvarchar](100) NULL;
+    PRINT 'Colonne [Algo] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [Algo] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'ModelPath') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [ModelPath] [nvarchar](max) NULL;
+    PRINT 'Colonne [ModelPath] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [ModelPath] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'AnnotationFile') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [AnnotationFile] [nvarchar](max) NULL;
+    PRINT 'Colonne [AnnotationFile] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [AnnotationFile] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'TrainDataPath') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [TrainDataPath] [nvarchar](max) NULL;
+    PRINT 'Colonne [TrainDataPath] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [TrainDataPath] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'TrainDataCount') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [TrainDataCount] [int] NULL;
+    PRINT 'Colonne [TrainDataCount] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [TrainDataCount] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'ValidDataCount') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project_Version] ADD [ValidDataCount] [int] NULL;
+    PRINT 'Colonne [ValidDataCount] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [ValidDataCount] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'IsItc') IS NULL BEGIN
+    -- Colonne bit NOT NULL ajoutée avec son default nommé à 0
+    ALTER TABLE [dbo].[Project_Version] ADD [IsItc] [bit] NOT NULL
+        CONSTRAINT [DF_ProjectVersion_IsItc] DEFAULT ((0));
+    PRINT 'Colonne [IsItc] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [IsItc] déjà présente.';
+END
+GO
+-- Batch séparé : les colonnes ajoutées ci-dessus existent à la compilation
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project_Version]'), 'IsItc', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Project_Version]', N'IsItc') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project_Version].[IsItc] absente, default [DF_ProjectVersion_IsItc] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_IsItc]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_ProjectVersion_IsItc] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT [DF_ProjectVersion_IsItc] DEFAULT ((0)) FOR [IsItc];
+        PRINT 'Default [DF_ProjectVersion_IsItc] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_ProjectVersion_IsItc' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_ProjectVersion_IsItc]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_ProjectVersion_IsItc] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_ProjectVersion_IsItc', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_ProjectVersion_IsItc].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_ProjectVersion_IsItc] existant.';
+    END
+    IF @dfDef <> N'((0))' BEGIN
+        PRINT 'ATTENTION : le default de [Project_Version].[IsItc] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
+    END
+END
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_ProjectVersion_TrainDataCount' AND parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+) BEGIN
+    ALTER TABLE [dbo].[Project_Version] WITH CHECK ADD CONSTRAINT [CK_ProjectVersion_TrainDataCount] CHECK ([TrainDataCount] IS NULL OR [TrainDataCount] >= 0);
+    PRINT 'Contrainte [CK_ProjectVersion_TrainDataCount] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Contrainte [CK_ProjectVersion_TrainDataCount] existante.';
+END
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_ProjectVersion_ValidDataCount' AND parent_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+) BEGIN
+    ALTER TABLE [dbo].[Project_Version] WITH CHECK ADD CONSTRAINT [CK_ProjectVersion_ValidDataCount] CHECK ([ValidDataCount] IS NULL OR [ValidDataCount] >= 0);
+    PRINT 'Contrainte [CK_ProjectVersion_ValidDataCount] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Contrainte [CK_ProjectVersion_ValidDataCount] existante.';
+END
+GO
+-- 3.1 Unicité (ProjectId, VersionNumber) : un numéro de version n'existe qu'une fois par
+--     projet. Sert aussi de cible à la clé étrangère composite de [Evaluation].
+--     Pas créée (avertissement) si des doublons existent déjà : à corriger d'abord.
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = N'UQ_Project_Version_ProjectId_VersionNumber'
+      AND object_id = OBJECT_ID(N'[dbo].[Project_Version]')
+) BEGIN
+    IF EXISTS (
+        SELECT 1 FROM [dbo].[Project_Version]
+        GROUP BY [ProjectId], [VersionNumber]
+        HAVING COUNT(*) > 1
+    ) BEGIN
+        PRINT 'ATTENTION : numéros de version en doublon dans [Project_Version], contrainte [UQ_Project_Version_ProjectId_VersionNumber] non créée.';
+        PRINT '            Liste : SELECT ProjectId, VersionNumber, COUNT(*) FROM dbo.Project_Version GROUP BY ProjectId, VersionNumber HAVING COUNT(*) > 1;';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project_Version] ADD CONSTRAINT [UQ_Project_Version_ProjectId_VersionNumber]
+            UNIQUE NONCLUSTERED ([ProjectId] ASC, [VersionNumber] ASC);
+        PRINT 'Contrainte [UQ_Project_Version_ProjectId_VersionNumber] ajoutée.';
+    END
+END
+ELSE BEGIN
+    PRINT 'Contrainte [UQ_Project_Version_ProjectId_VersionNumber] existante.';
+END
+-- 3.2 Pas d'index unique filtré « une seule version en prod » (WHERE DeliveredToProduction = 1) :
+--     il ferait échouer l'UPDATE qui flague une nouvelle version AVANT que le trigger
+--     trg_ProjectVersion_Update n'ait déflagué l'ancienne. La règle reste portée par le trigger.
 GO
 -- [RÉORGANISATION] Les triggers de [Project_Version] sont dans 2_procedures/trg_Project_Version.sql
 PRINT '=== FIN DE LA MIGRATION [dbo].[Project_Version] ==='

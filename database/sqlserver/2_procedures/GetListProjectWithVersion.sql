@@ -9,7 +9,11 @@ CREATE OR ALTER PROCEDURE [dbo].[GetListProjectWithVersion]
     -- Create date   : 24/07/2026
     -- Description   : Récupérer la liste des projets avec les infos des utilisateurs (Créateur, Membre, Updater)
     -- ==========================================================================================================================
-    @PersoId nvarchar(8) -- [CORRECTIF] même type que [User].[PersoId]
+    @PersoId nvarchar(8), -- [CORRECTIF] même type que [User].[PersoId]
+    -- [FUSION ML] la table Project contient désormais aussi les modèles entraînés.
+    -- Défaut 'LLM' : les appels existants (@PersoId seul) renvoient exactement la même
+    -- liste qu'avant. 'MODEL' = modèles entraînés, NULL = toutes les catégories.
+    @Category varchar(10) = 'LLM'
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -48,6 +52,8 @@ BEGIN
     [p].[Name] AS [ProjectName],
     [p].[Description],
     [p].[ProjectType],
+    [p].[Category],  -- [FUSION ML]
+    [p].[TaskType],  -- [FUSION ML]
     [p].[CreatedAt],
     [p].[CreatedBy],
     [u_creator].[Lastname] AS [CreatorName],
@@ -105,6 +111,7 @@ WHERE
         FROM [dbo].[Project_Member] [pm_check] 
         WHERE [pm_check].[ProjectId] = [p].[Id] AND [pm_check].[UserId] = @UserId
     )) AND [p].[IsActive] = 1
+    AND (@Category IS NULL OR [p].[Category] = @Category) -- [FUSION ML]
 ORDER BY [p].[Name];
 
         COMMIT TRANSACTION;

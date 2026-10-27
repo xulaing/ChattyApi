@@ -1,5 +1,12 @@
 # Refonte du schéma de base de données
 
+> **Note :** ce document et les fichiers `schema.sql`, `schema fusionne.sql` et
+> `schema.mmd` (PostgreSQL) sont la première étape de conception. La cible
+> retenue est **SQL Server** : le schéma ML est fusionné dans la base existante
+> (`Project`, `Project_Version`, `Evaluation`). Voir
+> [`sqlserver/ARCHITECTURE.md`](./sqlserver/ARCHITECTURE.md) pour la revue de ce
+> schéma et les scripts dans [`sqlserver/`](./sqlserver/).
+
 La base actuelle compte **~28 tables**, dont la grande majorité sont des copies
 quasi identiques déclinées par type de modèle (classification, segmentation,
 détection, extraction, découpage). Le schéma proposé les fusionne en

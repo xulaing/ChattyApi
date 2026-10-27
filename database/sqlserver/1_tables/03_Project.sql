@@ -25,6 +25,10 @@ CREATE TABLE [dbo].[Project](
     [CreatedAt] [datetime2](7) NOT NULL,
     [CreatedBy] [nvarchar](max) NULL,
     [UpdatedBy] [nvarchar](max) NULL,
+    -- [FUSION ML] colonnes issues de l'ancienne table model (voir section 3)
+    [Category] [varchar](10) NOT NULL,
+    [TaskType] [varchar](20) NULL,
+    [AssociatedSolutionId] [bigint] NULL,
     CONSTRAINT [PK_Project] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (
         PAD_INDEX = OFF,
         STATISTICS_NORECOMPUTE = OFF,
@@ -162,6 +166,137 @@ ELSE BEGIN
     END
 END
 
+END
+GO
+-- =======================================================
+-- 3. [FUSION ML] PROJETS LLM ET MODÈLES ENTRAÎNÉS DANS LA MÊME TABLE
+--    L'ancienne table model est absorbée par [Project] :
+--    - [Category]             : 'LLM' (projets existants) ou 'MODEL' (modèle entraîné)
+--                               -> [Ref_ProjectCategory]. Les lignes existantes
+--                               reçoivent 'LLM' via le default.
+--    - [TaskType]             : ex-model.model_type -> [Ref_TaskType].
+--                               Obligatoire pour un MODEL, facultatif pour un LLM.
+--    - [AssociatedSolutionId] : ex-model.associated_solution_id (aucune table cible
+--                               connue dans cette base : pas de FK).
+--    [ProjectType] (texte libre existant) n'est pas modifié.
+-- =======================================================
+PRINT 'Vérification des colonnes de fusion ML...'
+GO
+IF COL_LENGTH(N'[dbo].[Project]', N'Category') IS NULL BEGIN
+    -- Colonne NOT NULL ajoutée avec son default nommé : les lignes existantes valent 'LLM'
+    ALTER TABLE [dbo].[Project] ADD [Category] [varchar](10) NOT NULL
+        CONSTRAINT [DF_Project_Category] DEFAULT ('LLM');
+    PRINT 'Colonne [Category] ajoutée (projets existants = LLM).';
+END
+ELSE BEGIN
+    PRINT 'Colonne [Category] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project]', N'TaskType') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project] ADD [TaskType] [varchar](20) NULL;
+    PRINT 'Colonne [TaskType] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [TaskType] déjà présente.';
+END
+IF COL_LENGTH(N'[dbo].[Project]', N'AssociatedSolutionId') IS NULL BEGIN
+    ALTER TABLE [dbo].[Project] ADD [AssociatedSolutionId] [bigint] NULL;
+    PRINT 'Colonne [AssociatedSolutionId] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Colonne [AssociatedSolutionId] déjà présente.';
+END
+GO
+-- Batch séparé : les colonnes ajoutées ci-dessus existent à la compilation
+DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'Category', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Project]', N'Category') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Project].[Category] absente, default [DF_Project_Category] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Project_Category]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Project_Category] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project] ADD CONSTRAINT [DF_Project_Category] DEFAULT ('LLM') FOR [Category];
+        PRINT 'Default [DF_Project_Category] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_Project_Category' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Project_Category]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Project_Category] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Project_Category', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Project_Category].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Project_Category] existant.';
+    END
+    IF @dfDef <> N'(''LLM'')' BEGIN
+        PRINT 'ATTENTION : le default de [Project].[Category] vaut ' + @dfDef + ' au lieu de (''LLM'') (conservé, à vérifier).';
+    END
+END
+-- FK recherchée par colonne et table cible (et non par nom) : pas de doublon possible
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys fk
+    JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+      AND fk.referenced_object_id = OBJECT_ID(N'[dbo].[Ref_ProjectCategory]')
+      AND fkc.parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'Category', 'ColumnId')
+) BEGIN
+    ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [FK_Project_Category]
+        FOREIGN KEY ([Category]) REFERENCES [dbo].[Ref_ProjectCategory] ([Code]);
+    PRINT 'Contrainte [FK_Project_Category] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Clé étrangère [Project].[Category] -> [Ref_ProjectCategory] existante.';
+END
+-- FK recherchée par colonne et table cible (et non par nom) : pas de doublon possible
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys fk
+    JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+      AND fk.referenced_object_id = OBJECT_ID(N'[dbo].[Ref_TaskType]')
+      AND fkc.parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'TaskType', 'ColumnId')
+) BEGIN
+    ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [FK_Project_TaskType]
+        FOREIGN KEY ([TaskType]) REFERENCES [dbo].[Ref_TaskType] ([Code]);
+    PRINT 'Contrainte [FK_Project_TaskType] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Clé étrangère [Project].[TaskType] -> [Ref_TaskType] existante.';
+END
+-- Un modèle entraîné a forcément un type de tâche
+IF NOT EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = N'CK_Project_TaskType_Model' AND parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+) BEGIN
+    ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [CK_Project_TaskType_Model] CHECK ([Category] <> 'MODEL' OR [TaskType] IS NOT NULL);
+    PRINT 'Contrainte [CK_Project_TaskType_Model] ajoutée.';
+END
+ELSE BEGIN
+    PRINT 'Contrainte [CK_Project_TaskType_Model] existante.';
+END
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE name = N'IX_Project_Category' AND object_id = OBJECT_ID(N'[dbo].[Project]')
+) BEGIN
+    CREATE NONCLUSTERED INDEX [IX_Project_Category] ON [dbo].[Project] ([Category], [IsActive]);
+    PRINT 'Index [IX_Project_Category] créé.';
+END
+ELSE BEGIN
+    PRINT 'Index [IX_Project_Category] existant.';
 END
 GO
 -- [RÉORGANISATION] Les triggers de [Project] sont dans 2_procedures/trg_Project.sql
