@@ -15,6 +15,8 @@ base déjà livrée.
 2. **`2_procedures/`** — triggers et procédures de l'application. Exécutés
    après toutes les tables, car ils écrivent dans `Project_History` et lisent `User`.
 3. **`3_init/`** — données d'initialisation (équipes H620, H600, H500).
+4. **`4_migration_ml/`** — reprise ponctuelle des données de l'ancienne base des
+   modèles entraînés : voir [`4_migration_ml/README.md`](./4_migration_ml/README.md).
 
 **Fusion LLM / modèles entraînés** : voir [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 (revue du schéma, modèle fusionné, correspondances, impacts, points ouverts).

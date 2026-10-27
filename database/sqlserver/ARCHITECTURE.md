@@ -59,7 +59,7 @@ erDiagram
     Evaluation ||--o{ Evaluation_Metric : "cascade"
     Ref_Metric ||--o{ Project_Version_Metric : ""
     Ref_Metric ||--o{ Evaluation_Metric : ""
-    Project_Version ||--o{ Training_Run : "cascade"
+    Project ||--o{ Training_Run : "(ProjectId, VersionNumber)"
     Ref_RunStatus ||--o{ Training_Run : "StatusCode"
     Project_Version |o--o{ Inference_Request : "set null"
     Project_Version ||--o{ Project_Version_Document_Class : "cascade"
@@ -76,7 +76,7 @@ erDiagram
         nvarchar ProjectType "texte libre LLM (inchangé)"
         varchar Category FK "LLM | MODEL (défaut LLM)"
         varchar TaskType FK "obligatoire si MODEL"
-        bigint AssociatedSolutionId "ex-model"
+        uniqueidentifier AssociatedSolutionId "ex-model (GUID)"
         bit IsActive
     }
     Project_Version {
@@ -97,8 +97,8 @@ erDiagram
         int ProjectId FK
         int VersionNumber FK
         nvarchar EvalPath "ex-test_data_path"
-        nvarchar GroundTruthFile "ex-annotation_file"
-        nvarchar PredictionFile "ex-test_results_path"
+        nvarchar GroundTruthFile "ex-annotation_file (facultatif)"
+        nvarchar PredictionFile "ex-test_results_path (facultatif)"
         int TestDataCount "ex-test_run"
         bit IsItc "ex-test_run"
     }
@@ -114,7 +114,8 @@ erDiagram
     }
     Training_Run {
         uniqueidentifier Id PK
-        int ProjectVersionId FK
+        int ProjectId FK
+        int VersionNumber "version visée, absente si l'entraînement a échoué"
         varchar StatusCode FK
         datetime2 StartedAt
         datetime2 EndedAt
@@ -228,13 +229,25 @@ ORDER BY CASE WHEN r.LowerIsBetter = 1 THEN m.Value ELSE -m.Value END;
 
 ---
 
-## 5. Points ouverts et recommandations
+## 5. Ajustements imposés par les données réelles
 
-1. **Migration des données ML historiques.** Les scripts créent la structure.
-   Reprendre les données des 28 anciennes tables demande leur DDL, qui n'est pas
-   dans ce dépôt. La correspondance de la section 3 sert de spécification.
-   Attention : les identifiants des 5 tables de versions se chevauchent. Il faut
-   donc une table de correspondance `(table source, ancien Id) → Project_Version.Id`.
+L'extrait de l'ancienne base a montré trois écarts avec le schéma cible, corrigés
+dans les scripts `1_tables` (idempotents, y compris sur une base déjà déployée) :
+
+| Constat dans les données | Correction |
+|---|---|
+| `Model.AssociatedSolutionId` est un GUID | `Project.AssociatedSolutionId` en `uniqueidentifier` (au lieu de `bigint`) |
+| Les tests de modèles n'ont pas toujours de fichier de résultats (`TestResultsPath`) ni d'annotation | `Evaluation.GroundTruthFile` et `PredictionFile` facultatifs ; `EvalPath` reste obligatoire |
+| Les suivis d'entraînement visent `(IdModel, VersionNb)` ; un entraînement en échec ne crée pas de version | `Training_Run` référence `(ProjectId, VersionNumber)` au lieu d'une ligne de `Project_Version` ; ajout de `AnnotationFile` et `IsItc` (présents dans `TrainTrack`) |
+
+---
+
+## 6. Points ouverts et recommandations
+
+1. **Migration des données ML historiques** : voir [`4_migration_ml/`](./4_migration_ml/README.md).
+   Valider la correspondance des statuts d'entraînement (`StatusTrain` 0 / 1 / 2) et
+   les noms de colonnes des tables vides dans l'extrait (Detection, Segmentation,
+   DocumentField, DocumentProperty), déduits par analogie.
 2. **`ProjectType` et `TaskType`.** Si les valeurs de `ProjectType` des projets
    LLM correspondent à des types de tâche, les deux colonnes peuvent être
    fusionnées dans `TaskType`. À vérifier avec

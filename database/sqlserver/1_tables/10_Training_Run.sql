@@ -8,27 +8,33 @@ GO
 -- [FUSION ML] Remplace : TrainTrack, SegmentationTrainTrack, DetectionTrainTrack, ExtractionTrainTrack
 -- [StatusCode] contrôlé par [Ref_RunStatus] (ex-ENUM run_status).
 -- [Classes] : liste JSON des classes entraînées (contrôlée par ISJSON).
+-- Un entraînement vise un projet et un numéro de version ([ProjectId], [VersionNumber]),
+-- et non une ligne de [Project_Version] : un entraînement en échec ne crée pas de
+-- version (cas réel des données historiques TrainTrack / ExtractionTrainTrack).
+-- La version produite se retrouve par (ProjectId, VersionNumber) quand elle existe.
 -- [Id] en uniqueidentifier : l'identifiant d'un entraînement est partagé avec le pipeline
 -- d'entraînement (dossiers de sortie, logs, suivi). Il peut être généré par le pipeline
 -- avant l'insertion, sans aller-retour en base.
 -- Valeur par défaut NEWSEQUENTIALID() : GUID croissants, donc pas de fragmentation
 -- de l'index cluster quand la base génère l'identifiant.
 -- =======================================================
--- 0. [GUID] TABLE CRÉÉE PAR UNE VERSION PRÉCÉDENTE AVEC UN [Id] NUMÉRIQUE
+-- 0. TABLE CRÉÉE PAR UNE VERSION PRÉCÉDENTE DE CE SCRIPT
+--    ([Id] numérique ou colonne [ProjectVersionId] au lieu de [ProjectId] / [VersionNumber])
 --    Vide : elle est supprimée puis recréée en section 1 (aucune table ne la référence).
 --    Non vide : arrêt, la conversion des données doit être décidée manuellement.
 -- =======================================================
 IF EXISTS (
     SELECT 1 FROM sys.columns
-    WHERE object_id = OBJECT_ID(N'[dbo].[Training_Run]') AND name = N'Id'
-      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+    WHERE object_id = OBJECT_ID(N'[dbo].[Training_Run]')
+      AND (   (name = N'Id' AND TYPE_NAME(system_type_id) <> N'uniqueidentifier')
+           OR name = N'ProjectVersionId')
 ) BEGIN
     IF EXISTS (SELECT 1 FROM [dbo].[Training_Run]) BEGIN
-        RAISERROR ('ERREUR CRITIQUE : [Training_Run] contient des données avec un [Id] numérique. Conversion en uniqueidentifier à traiter manuellement.', 16, 1);
+        RAISERROR ('ERREUR CRITIQUE : [Training_Run] contient des données dans une ancienne structure. Conversion à traiter manuellement.', 16, 1);
         RETURN;
     END
     DROP TABLE [dbo].[Training_Run];
-    PRINT 'Table [dbo].[Training_Run] (Id numérique, vide) supprimée pour être recréée avec un Id uniqueidentifier.';
+    PRINT 'Table [dbo].[Training_Run] (ancienne structure, vide) supprimée pour être recréée.';
 END
 GO
 -- =======================================================
@@ -45,7 +51,8 @@ AND type in (N'U')
 PRINT 'Création de la table [dbo].[Training_Run]...';
 CREATE TABLE [dbo].[Training_Run](
     [Id] [uniqueidentifier] NOT NULL,
-    [ProjectVersionId] [int] NOT NULL,
+    [ProjectId] [int] NOT NULL,
+    [VersionNumber] [int] NOT NULL,
     [StatusCode] [varchar](20) NOT NULL,
     [StartedAt] [datetime2](7) NULL,
     [EndedAt] [datetime2](7) NULL,
@@ -56,7 +63,9 @@ CREATE TABLE [dbo].[Training_Run](
     [Classes] [nvarchar](max) NULL,
     [ImageSize] [int] NULL,
     [DatasetPath] [nvarchar](max) NULL,
+    [AnnotationFile] [nvarchar](max) NULL,
     [OutputPath] [nvarchar](max) NULL,
+    [IsItc] [bit] NOT NULL,
     [CreatedBy] [nvarchar](50) NOT NULL,
     [CreatedAt] [datetime2](7) NOT NULL,
     CONSTRAINT [PK_Training_Run] PRIMARY KEY CLUSTERED ([Id] ASC)
@@ -182,21 +191,58 @@ ELSE BEGIN
         PRINT 'ATTENTION : le default de [Training_Run].[CreatedAt] vaut ' + @dfDef + ' au lieu de (getdate()) (conservé, à vérifier).';
     END
 END
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Training_Run]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Training_Run]'), 'IsItc', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Training_Run]', N'IsItc') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Training_Run].[IsItc] absente, default [DF_TrainingRun_IsItc] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_TrainingRun_IsItc]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_TrainingRun_IsItc] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Training_Run] ADD CONSTRAINT [DF_TrainingRun_IsItc] DEFAULT ((0)) FOR [IsItc];
+        PRINT 'Default [DF_TrainingRun_IsItc] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_TrainingRun_IsItc' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_TrainingRun_IsItc]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_TrainingRun_IsItc] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_TrainingRun_IsItc', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_TrainingRun_IsItc].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_TrainingRun_IsItc] existant.';
+    END
+    IF @dfDef <> N'((0))' BEGIN
+        PRINT 'ATTENTION : le default de [Training_Run].[IsItc] vaut ' + @dfDef + ' au lieu de ((0)) (conservé, à vérifier).';
+    END
+END
 -- FK recherchée par colonne et table cible (et non par nom) : pas de doublon possible
 IF NOT EXISTS (
     SELECT 1
     FROM sys.foreign_keys fk
     JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
     WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[Training_Run]')
-      AND fk.referenced_object_id = OBJECT_ID(N'[dbo].[Project_Version]')
-      AND fkc.parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Training_Run]'), 'ProjectVersionId', 'ColumnId')
+      AND fk.referenced_object_id = OBJECT_ID(N'[dbo].[Project]')
+      AND fkc.parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Training_Run]'), 'ProjectId', 'ColumnId')
 ) BEGIN
-    ALTER TABLE [dbo].[Training_Run] WITH CHECK ADD CONSTRAINT [FK_TrainingRun_ProjectVersion]
-        FOREIGN KEY ([ProjectVersionId]) REFERENCES [dbo].[Project_Version] ([Id]) ON DELETE CASCADE;
-    PRINT 'Contrainte [FK_TrainingRun_ProjectVersion] ajoutée.';
+    ALTER TABLE [dbo].[Training_Run] WITH CHECK ADD CONSTRAINT [FK_TrainingRun_Project]
+        FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project] ([Id]);
+    PRINT 'Contrainte [FK_TrainingRun_Project] ajoutée.';
 END
 ELSE BEGIN
-    PRINT 'Clé étrangère [Training_Run].[ProjectVersionId] -> [Project_Version] existante.';
+    PRINT 'Clé étrangère [Training_Run].[ProjectId] -> [Project] existante.';
 END
 -- FK recherchée par colonne et table cible (et non par nom) : pas de doublon possible
 IF NOT EXISTS (
@@ -246,13 +292,13 @@ ELSE BEGIN
 END
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
-    WHERE name = N'IX_TrainingRun_ProjectVersionId' AND object_id = OBJECT_ID(N'[dbo].[Training_Run]')
+    WHERE name = N'IX_TrainingRun_ProjectId_VersionNumber' AND object_id = OBJECT_ID(N'[dbo].[Training_Run]')
 ) BEGIN
-    CREATE NONCLUSTERED INDEX [IX_TrainingRun_ProjectVersionId] ON [dbo].[Training_Run] ([ProjectVersionId] ASC);
-    PRINT 'Index [IX_TrainingRun_ProjectVersionId] créé.';
+    CREATE NONCLUSTERED INDEX [IX_TrainingRun_ProjectId_VersionNumber] ON [dbo].[Training_Run] ([ProjectId] ASC, [VersionNumber] ASC);
+    PRINT 'Index [IX_TrainingRun_ProjectId_VersionNumber] créé.';
 END
 ELSE BEGIN
-    PRINT 'Index [IX_TrainingRun_ProjectVersionId] existant.';
+    PRINT 'Index [IX_TrainingRun_ProjectId_VersionNumber] existant.';
 END
 IF NOT EXISTS (
     SELECT 1 FROM sys.extended_properties

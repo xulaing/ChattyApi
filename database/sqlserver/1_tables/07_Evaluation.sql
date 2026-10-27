@@ -24,8 +24,9 @@ CREATE TABLE [dbo].[Evaluation](
     [Name] [nvarchar](max) NULL,
     [Timestamp] [datetime2](7) NULL,
     [EvalPath] [nvarchar](max) NOT NULL,
-    [GroundTruthFile] [nvarchar](max) NOT NULL,
-    [PredictionFile] [nvarchar](max) NOT NULL,
+    -- [FUSION ML] nullables : les tests de modèles historiques n'ont pas toujours ces fichiers
+    [GroundTruthFile] [nvarchar](max) NULL,
+    [PredictionFile] [nvarchar](max) NULL,
     [TriggeredBy] [nvarchar](max) NULL,
     -- [FUSION ML] colonnes issues de l'ancienne table test_run (voir section 3)
     [TestDataCount] [int] NULL,
@@ -150,6 +151,17 @@ IF COL_LENGTH(N'[dbo].[Evaluation]', N'IsItc') IS NULL BEGIN
 END
 ELSE BEGIN
     PRINT 'Colonne [IsItc] déjà présente.';
+END
+-- [FUSION ML] [GroundTruthFile] et [PredictionFile] deviennent facultatifs : les tests de
+-- modèles historiques (ex-Model*_Version_Test) n'ont pas toujours de fichier de
+-- résultats ni de fichier d'annotation. [EvalPath] (jeu de test) reste obligatoire.
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Evaluation]') AND name = N'GroundTruthFile' AND is_nullable = 0) BEGIN
+    ALTER TABLE [dbo].[Evaluation] ALTER COLUMN [GroundTruthFile] [nvarchar](max) NULL;
+    PRINT 'Colonne [GroundTruthFile] rendue facultative.';
+END
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[Evaluation]') AND name = N'PredictionFile' AND is_nullable = 0) BEGIN
+    ALTER TABLE [dbo].[Evaluation] ALTER COLUMN [PredictionFile] [nvarchar](max) NULL;
+    PRINT 'Colonne [PredictionFile] rendue facultative.';
 END
 IF COL_LENGTH(N'[dbo].[Evaluation]', N'Comment') IS NULL BEGIN
     ALTER TABLE [dbo].[Evaluation] ADD [Comment] [nvarchar](max) NULL;

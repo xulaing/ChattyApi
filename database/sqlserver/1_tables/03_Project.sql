@@ -28,7 +28,7 @@ CREATE TABLE [dbo].[Project](
     -- [FUSION ML] colonnes issues de l'ancienne table model (voir section 3)
     [Category] [varchar](10) NOT NULL,
     [TaskType] [varchar](20) NULL,
-    [AssociatedSolutionId] [bigint] NULL,
+    [AssociatedSolutionId] [uniqueidentifier] NULL,
     CONSTRAINT [PK_Project] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (
         PAD_INDEX = OFF,
         STATISTICS_NORECOMPUTE = OFF,
@@ -176,8 +176,8 @@ GO
 --                               reçoivent 'LLM' via le default.
 --    - [TaskType]             : ex-model.model_type -> [Ref_TaskType].
 --                               Obligatoire pour un MODEL, facultatif pour un LLM.
---    - [AssociatedSolutionId] : ex-model.associated_solution_id (aucune table cible
---                               connue dans cette base : pas de FK).
+--    - [AssociatedSolutionId] : ex-model.AssociatedSolutionId, un GUID (aucune table
+--                               cible connue dans cette base : pas de FK).
 --    [ProjectType] (texte libre existant) n'est pas modifié.
 -- =======================================================
 PRINT 'Vérification des colonnes de fusion ML...'
@@ -198,8 +198,27 @@ END
 ELSE BEGIN
     PRINT 'Colonne [TaskType] déjà présente.';
 END
+-- Colonne créée en bigint par une version précédente de ce script : la donnée source est
+-- un GUID. Vide : la colonne est supprimée puis recréée ; sinon arrêt.
+-- (SQL dynamique : la colonne peut ne pas exister à la compilation du batch)
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'[dbo].[Project]') AND name = N'AssociatedSolutionId'
+      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+) BEGIN
+    DECLARE @NonVide INT;
+    EXEC sys.sp_executesql
+        N'SELECT @n = COUNT(*) FROM [dbo].[Project] WHERE [AssociatedSolutionId] IS NOT NULL',
+        N'@n INT OUTPUT', @n = @NonVide OUTPUT;
+    IF @NonVide > 0 BEGIN
+        RAISERROR ('ERREUR CRITIQUE : [Project].[AssociatedSolutionId] contient des valeurs non GUID. Conversion à traiter manuellement.', 16, 1);
+        RETURN;
+    END
+    ALTER TABLE [dbo].[Project] DROP COLUMN [AssociatedSolutionId];
+    PRINT 'Colonne [AssociatedSolutionId] (bigint, vide) supprimée pour être recréée en uniqueidentifier.';
+END
 IF COL_LENGTH(N'[dbo].[Project]', N'AssociatedSolutionId') IS NULL BEGIN
-    ALTER TABLE [dbo].[Project] ADD [AssociatedSolutionId] [bigint] NULL;
+    ALTER TABLE [dbo].[Project] ADD [AssociatedSolutionId] [uniqueidentifier] NULL;
     PRINT 'Colonne [AssociatedSolutionId] ajoutée.';
 END
 ELSE BEGIN
