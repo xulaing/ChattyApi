@@ -98,6 +98,73 @@ $IgnoredTables = @(
 )
 
 # ---------------------------------------------------------------------------
+# Colonnes reprises par le script SQL, par type de table.
+# Une table vide dans cet environnement peut être remplie dans un autre : chaque
+# colonne présente dans l'export mais absente de ces listes est signalée, car elle
+# ne serait pas migrée. Les noms sont sensibles à la casse, comme OPENJSON.
+# DOIT rester aligné avec les OPENJSON ... WITH du script SQL généré (plus bas).
+#   Required : groupes de colonnes obligatoires ('A|B' = A ou B)
+#   Known    : colonnes reprises
+#   Skipped  : colonnes volontairement non reprises (redondantes)
+# ---------------------------------------------------------------------------
+# Colonnes de métriques -> code [Ref_Metric] (alimente aussi #MetricKey du script SQL)
+$MetricKeys = [ordered]@{
+    'Accuracy' = 'ACCURACY'; 'ErrorRate' = 'ERROR_RATE'; 'PrecisionScore' = 'PRECISION'; 'RecallScore' = 'RECALL'
+    'f1_score' = 'F1'; 'kappa' = 'KAPPA'; 'AP_bbox' = 'AP_BBOX'; 'Recall_bbox' = 'RECALL_BBOX'
+    'AP_segm' = 'AP_SEGM'; 'Recall_segm' = 'RECALL_SEGM'; 'MeanErrors' = 'MEAN_ERRORS'; 'NbErrors' = 'NB_ERRORS'
+}
+$VersionIds = @('IdModelVersion', 'IdModelExtractionVersion', 'IdModelDetectionVersion', 'IdModelSegmentationVersion', 'IdModelDecoupageVersion')
+$ModelIds = @('IdModel', 'IdModelExtraction', 'IdModelDetection', 'IdModelSegmentation', 'IdModelDecoupage')
+$TestIds = @('IdModelVersionTest', 'IdModelExtractionVersionTest', 'IdModelDetectionVersionTest', 'IdModelSegmentationVersionTest', 'IdModelDecoupageVersionTest')
+$TrainIds = @('IdTrainTrack', 'IdExtractionTrainTrack', 'IdDetectionTrainTrack', 'IdSegmentationTrainTrack')
+$InferenceIds = @('IdClassification', 'IdDecoupage', 'IdExtraction', 'IdDetection', 'IdSegmentation')
+$Metrics = @($MetricKeys.Keys)
+
+$KindSpecs = @{
+    Model            = @{ Required = @('IdModel', 'Name')
+                          Known    = @('IdModel', 'Name', 'ProjectType', 'Creator', 'DateCreate', 'AssociatedSolutionId'); Skipped = @() }
+    Version          = @{ Required = @(($VersionIds -join '|'), ($ModelIds -join '|'), 'VersionNb')
+                          Known    = $VersionIds + $ModelIds + @('VersionNb', 'DateCreate', 'Creator', 'TrainDataCount', 'ValidDataCount', 'TrainDataPath', 'ModelPath', 'AnnotationFile', 'InProd', 'IsITC', 'Algo', 'Comment') + $Metrics
+                          Skipped  = @() }
+    Test             = @{ Required = @(($TestIds -join '|'), ($VersionIds -join '|'), 'TestDataPath')
+                          Known    = $TestIds + $VersionIds + @('VersionNb', 'DateCreate', 'Creator', 'TestDataCount', 'TestDataPath', 'TestResultsPath', 'AnnotationFile', 'IsITC', 'Comment') + $Metrics
+                          Skipped  = @('Algo') }   # algorithme de la version testée : déjà porté par la version
+    Train            = @{ Required = @(($TrainIds -join '|'), (($ModelIds | Where-Object { $_ -ne 'IdModelDecoupage' }) -join '|'), 'VersionNb', 'StatusTrain')
+                          Known    = $TrainIds + $ModelIds + @('VersionNb', 'DateStart', 'DateEnd', 'StatusTrain', 'DatasetPath', 'AnnotationFile', 'ModelPath', 'Creator', 'CurrentStep', 'Step', 'Epoch', 'CurrentPhase', 'IsITC')
+                          Skipped  = @() }
+    Inference        = @{ Required = @(($InferenceIds -join '|'), 'DocId')
+                          Known    = $InferenceIds + @('DocId', 'ResMessage', 'DateCreate', 'EndStatus'); Skipped = @() }
+    DocumentClass    = @{ Required = @('IdClass|IdDocumentClass', 'NameClass|Name')
+                          Known    = @('IdClass', 'IdDocumentClass', 'NameClass', 'Name', 'DescriptionClass', 'Description', 'CreatorClass', 'Creator', 'DateCreateClass', 'DateCreate', 'UpdaterClass', 'Updater', 'DateUpdateClass', 'DateUpdate'); Skipped = @() }
+    DocumentField    = @{ Required = @('IdField|IdDocumentField', 'IdClass|IdDocumentClass', 'NameField|Name')
+                          Known    = @('IdField', 'IdDocumentField', 'IdClass', 'IdDocumentClass', 'NameField', 'Name', 'DescriptionField', 'Description', 'CreatorField', 'Creator', 'DateCreateField', 'DateCreate', 'UpdaterField', 'Updater', 'DateUpdateField', 'DateUpdate'); Skipped = @() }
+    DocumentProperty = @{ Required = @('IdProperty|IdDocumentProperty', 'NameProperty|Name')
+                          Known    = @('IdProperty', 'IdDocumentProperty', 'NameProperty', 'Name', 'DescriptionProperty', 'Description', 'CreatorProperty', 'Creator', 'DateCreateProperty', 'DateCreate', 'UpdaterProperty', 'Updater', 'DateUpdateProperty', 'DateUpdate'); Skipped = @() }
+    ClassAssoc       = @{ Required = @('IdClass|IdDocumentClass', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdClass', 'IdDocumentClass', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
+    FieldAssoc       = @{ Required = @('IdField|IdDocumentField', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdField', 'IdDocumentField', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
+    PropertyAssoc    = @{ Required = @('IdProperty|IdDocumentProperty', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdProperty', 'IdDocumentProperty', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
+    DocumentRequest  = @{ Required = @('IdDocumentRequest', 'TypeDocumentRequest', 'NameDocumentRequest')
+                          Known    = @('IdDocumentRequest', 'TypeDocumentRequest', 'NameDocumentRequest', 'DescriptionDocumentRequest', 'StatusDocumentRequest', 'CreatorDocumentRequest', 'DateCreateDocumentRequest', 'UpdaterDocumentRequest', 'DateUpdateDocumentRequest', 'CommentDocumentRequest', 'ResponseDocumentRequest'); Skipped = @() }
+}
+
+function Get-TableKind([string]$Name) {
+    if ($Name -eq 'Model') { return 'Model' }
+    if ($Name -like 'Model*_Version_Test') { return 'Test' }
+    if ($Name -like 'Model*_Version') { return 'Version' }
+    if ($Name -like '*TrainTrack') { return 'Train' }
+    if ($InferenceTables -contains $Name) { return 'Inference' }
+    switch ($Name) {
+        'DocumentClassProjects' { return 'ClassAssoc' }
+        'DocumentFieldProjects' { return 'FieldAssoc' }
+        'DocumentPropertyProjects' { return 'PropertyAssoc' }
+        default { return $Name }   # DocumentClass, DocumentField, DocumentProperty, DocumentRequest
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Lecture du fichier
 # ---------------------------------------------------------------------------
 function Read-ExportFile([string]$Path, [string]$Encoding) {
@@ -184,6 +251,28 @@ function Split-JsonArray([string]$Text) {
     return $result
 }
 
+# Met à jour l'état de lecture JSON (dans une chaîne ? caractère échappé en attente ?)
+# après une ligne : un saut de ligne peut tomber au milieu d'une chaîne, voire juste
+# après un antislash.
+function Update-JsonStringState($State, [string]$Line) {
+    $stops = [char[]]@('"', '\')
+    $i = 0
+    if ($State.Escape) { $State.Escape = $false; $i = 1 }
+    while ($i -lt $Line.Length) {
+        $j = $Line.IndexOfAny($stops, $i)
+        if ($j -lt 0) { break }
+        if ($Line[$j] -eq '\') {
+            if ($State.InString) {
+                if ($j + 1 -ge $Line.Length) { $State.Escape = $true; break }
+                $i = $j + 2; continue
+            }
+            $i = $j + 1; continue
+        }
+        $State.InString = -not $State.InString
+        $i = $j + 1
+    }
+}
+
 function Resync([string]$s, [int]$from, $result) {
     $next = $s.IndexOf(',{"', $from)
     if ($next -lt 0) { return $s.Length }
@@ -194,26 +283,38 @@ function Resync([string]$s, [int]$from, $result) {
 # Analyse de l'export
 # ---------------------------------------------------------------------------
 $text = Read-ExportFile $InputFile $InputEncoding
-$lines = $text -split "`r?`n"
+# Sauts de ligne CR LF, LF ou CR seul
+$lines = $text -split "`r`n|`n|`r"
 
+# Le JSON d'une table s'étend de « --- Résultat JSON : » jusqu'à la section suivante.
+# Il peut être coupé par des sauts de ligne n'importe où (découpage FOR JSON, retours
+# à la ligne parasites, lignes vides intercalées) : toutes les lignes sont recollées
+# SANS séparateur. Une ligne vide est ignorée, sauf au milieu d'une chaîne JSON où
+# ses espaces font partie de la valeur.
 $tables = New-Object System.Collections.Generic.List[object]
 $current = $null
 $inJson = $false
 foreach ($line in $lines) {
     if ($line -match '^\s*---\s*Table\s*:\s*(.+?)\s*$') {
-        $current = [pscustomobject]@{ Name = $Matches[1]; Declared = $null; Json = New-Object System.Text.StringBuilder; EmptyMarker = $false }
+        $current = [pscustomobject]@{
+            Name = $Matches[1]; Declared = $null; Json = New-Object System.Text.StringBuilder
+            JsonLines = 0; InString = $false; Escape = $false
+        }
         $tables.Add($current)
         $inJson = $false
         continue
     }
     if ($null -eq $current) { continue }
-    if ($line -match '^\s*Nombre de lignes\s*:\s*(\d+)') { $current.Declared = [int]$Matches[1]; continue }
-    if ($line -match '^\s*Table vide\s*:') { $current.EmptyMarker = $true; $inJson = $false; continue }
-    if ($line -match '^\s*---\s*R.{1,3}sultat JSON\s*:') { $inJson = $true; continue }
     if ($inJson) {
-        if ($line.Trim().Length -eq 0) { $inJson = $false; continue }
-        [void]$current.Json.Append($line)   # lignes recollées sans séparateur
+        if ($line.Trim().Length -eq 0 -and -not $current.InString) { continue }
+        [void]$current.Json.Append($line)
+        $current.JsonLines++
+        Update-JsonStringState $current $line
+        continue
     }
+    if ($line -match '^\s*Nombre de lignes\s*:\s*(\d+)') { $current.Declared = [int]$Matches[1]; continue }
+    if ($line -match '^\s*Table vide\s*:') { continue }
+    if ($line -match '^\s*---\s*R.{1,3}sultat JSON\s*:') { $inJson = $true; continue }
 }
 if ($tables.Count -eq 0) { throw "Aucune section '--- Table :' trouvée dans $InputFile." }
 
@@ -233,15 +334,34 @@ foreach ($t in $tables) {
     $valid = New-Object System.Collections.Generic.List[string]
     $invalid = 0
     $logs = 0
+    $columns = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $missing = @{}   # groupe obligatoire -> nombre de lignes où il manque
+    $spec = $null
+    if ($MigratedTables -contains $t.Name) { $spec = $KindSpecs[(Get-TableKind $t.Name)] }
     foreach ($el in $split.Elements) {
         $obj = $null
         try { $obj = ConvertFrom-Json -InputObject $el } catch { $obj = $null }
         if ($null -eq $obj -or -not ($obj -is [System.Management.Automation.PSCustomObject])) { $invalid++; continue }
-        if ($InferenceTables -contains $t.Name) {
-            $docIdProp = $obj.PSObject.Properties['DocId']
-            if ($null -eq $docIdProp -or $null -eq $docIdProp.Value -or ([string]$docIdProp.Value).Trim().Length -eq 0) { $logs++; continue }
+        # Colonnes présentes avec une valeur (noms sensibles à la casse)
+        $present = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+        foreach ($p in $obj.PSObject.Properties) {
+            if ($null -ne $p.Value -and -not ($p.Value -is [string] -and $p.Value.Trim().Length -eq 0)) { [void]$present.Add($p.Name) }
+            [void]$columns.Add($p.Name)
+        }
+        if ($InferenceTables -contains $t.Name -and -not $present.Contains('DocId')) { $logs++; continue }
+        if ($null -ne $spec) {
+            foreach ($group in $spec.Required) {
+                $ok = $false
+                foreach ($alt in ($group -split '\|')) { if ($present.Contains($alt)) { $ok = $true; break } }
+                if (-not $ok) { $missing[$group] = 1 + [int]$missing[$group] }
+            }
         }
         $valid.Add($el)
+    }
+    # Colonnes présentes dans l'export mais non reprises par le script SQL
+    $unknown = @()
+    if ($null -ne $spec) {
+        $unknown = @($columns | Where-Object { ($spec.Known -cnotcontains $_) -and ($spec.Skipped -cnotcontains $_) } | Sort-Object)
     }
     $jsonCount = $split.Elements.Count
     $declared = $t.Declared
@@ -262,6 +382,17 @@ foreach ($t in $tables) {
     if ($logs -gt 0) {
         Write-Host ("LOGS   {0}  : {1} ligne(s) de logs IHM écartée(s) (sans DocId)" -f $t.Name, $logs) -ForegroundColor Cyan
     }
+    $structure = ''
+    if ($unknown.Count -gt 0) {
+        $problems++
+        $structure = 'colonnes non reprises'
+        Write-Host ("COLONNES {0}  : colonne(s) présente(s) dans l'export mais non reprise(s) par la migration : {1}" -f $t.Name, ($unknown -join ', ')) -ForegroundColor Red
+    }
+    foreach ($group in $missing.Keys) {
+        $problems++
+        $structure = 'colonnes obligatoires absentes'
+        Write-Host ("STRUCTURE {0}  : {1} ligne(s) sans [{2}]" -f $t.Name, $missing[$group], $group) -ForegroundColor Red
+    }
 
     $staged = 0
     if ($MigratedTables -contains $t.Name) {
@@ -273,9 +404,11 @@ foreach ($t in $tables) {
             Annonce   = $declared
             JSON      = $jsonCount
             Invalides = $invalid
+            LignesTxt = $t.JsonLines
             LogsIHM   = $logs
             AMigrer   = $staged
             Ecart     = $(if ($mismatch) { 'OUI' } else { '' })
+            Structure = $structure
             Statut    = $status
         })
 }
@@ -283,7 +416,7 @@ foreach ($t in $tables) {
 $report | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 
 if ($problems -gt 0) {
-    Write-Warning "$problems table(s) migrée(s) avec un écart entre le nombre de lignes annoncé et le JSON (voir les lignes ÉCART)."
+    Write-Warning "$problems problème(s) sur les tables migrées (voir les lignes ÉCART, COLONNES et STRUCTURE)."
     if ($Strict) {
         Write-Error 'Mode -Strict : aucun script SQL généré.'
         exit 1
@@ -327,7 +460,7 @@ $nl = "`r`n"
    Contrôle de l'export :
 "@ + $nl)
 foreach ($r in $report) {
-    [void]$sb.Append(('     {0,-32} annoncé {1,5}  JSON {2,5}  logs IHM {3,4}  à migrer {4,5}  {5} {6}' -f $r.Table, $r.Annonce, $r.JSON, $r.LogsIHM, $r.AMigrer, $(if ($r.Ecart) { 'ÉCART' } else { '' }), $r.Statut) + $nl)
+    [void]$sb.Append(('     {0,-32} annoncé {1,5}  JSON {2,5}  logs IHM {3,4}  à migrer {4,5}  {5} {6} {7}' -f $r.Table, $r.Annonce, $r.JSON, $r.LogsIHM, $r.AMigrer, $(if ($r.Ecart) { 'ÉCART' } else { '' }), $r.Structure, $r.Statut) + $nl)
 }
 [void]$sb.Append("   ===================================================================== */$nl")
 
@@ -372,10 +505,15 @@ IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 CREATE TABLE #Expected (SourceTable nvarchar(128) NOT NULL PRIMARY KEY, NbRows int NOT NULL);
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 CREATE TABLE #StatusMap (StatusTrain int NOT NULL PRIMARY KEY, StatusCode varchar(20) NOT NULL);
+IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
+CREATE TABLE #MetricKey (JsonKey nvarchar(50) COLLATE Latin1_General_CS_AS NOT NULL PRIMARY KEY, MetricCode varchar(30) NOT NULL);
 
 '@)
 foreach ($k in ($TrainStatusMap.Keys | Sort-Object { [int]$_ })) {
     [void]$sb.Append(("INSERT INTO #StatusMap (StatusTrain, StatusCode) VALUES ({0}, '{1}');" -f [int]$k, ([string]$TrainStatusMap[$k]).Replace("'", "''")) + $nl)
+}
+foreach ($k in $MetricKeys.Keys) {
+    [void]$sb.Append(("INSERT INTO #MetricKey (JsonKey, MetricCode) VALUES (N'{0}', '{1}');" -f $k, $MetricKeys[$k]) + $nl)
 }
 foreach ($g in ($rowsToLoad | Group-Object Table)) {
     [void]$sb.Append(("INSERT INTO #Expected (SourceTable, NbRows) VALUES (N'{0}', {1});" -f $g.Name, $g.Count) + $nl)
@@ -440,13 +578,8 @@ BEGIN TRY
         (N'Detection_Test',                'INFERENCE', 'DETECTION',      NULL),
         (N'Segmentation_Test',             'INFERENCE', 'SEGMENTATION',   NULL);
 
-    -- Colonnes de métriques de l'ancienne base -> [Ref_Metric]
-    CREATE TABLE #MetricKey (JsonKey nvarchar(50) NOT NULL PRIMARY KEY, MetricCode varchar(30) NOT NULL);
-    INSERT INTO #MetricKey VALUES
-        (N'Accuracy', 'ACCURACY'), (N'ErrorRate', 'ERROR_RATE'), (N'PrecisionScore', 'PRECISION'),
-        (N'RecallScore', 'RECALL'), (N'f1_score', 'F1'), (N'kappa', 'KAPPA'),
-        (N'AP_bbox', 'AP_BBOX'), (N'Recall_bbox', 'RECALL_BBOX'), (N'AP_segm', 'AP_SEGM'),
-        (N'Recall_segm', 'RECALL_SEGM'), (N'MeanErrors', 'MEAN_ERRORS'), (N'NbErrors', 'NB_ERRORS');
+    -- #MetricKey (colonnes de métriques -> [Ref_Metric]) est alimentée dans le préambule
+    -- à partir de $MetricKeys du script PowerShell.
 
     -- -----------------------------------------------------------------
     -- 0.1 Mise en forme typée des lignes sources (tables temporaires)
@@ -1013,6 +1146,7 @@ GO
 IF OBJECT_ID(N'tempdb..#Src') IS NOT NULL DROP TABLE #Src;
 IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
+IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
 GO
 '@)
 

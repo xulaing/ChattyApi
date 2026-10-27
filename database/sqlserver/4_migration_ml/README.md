@@ -18,7 +18,7 @@ sqlcmd -S <serveur> -d <base> -b -i .\export_ancienne_base_migration.sql
 | `-InputFile` | Export texte de l'ancienne base (format ci-dessous) |
 | `-OutputFile` | Script SQL généré (défaut : `<InputFile>_migration.sql`) |
 | `-Strict` | Aucun script généré si une table migrée présente un écart (recommandé en production) |
-| `-TrainStatusMap` | `StatusTrain` → `Ref_RunStatus`. Défaut `@{0='RUNNING';1='SUCCEEDED';2='FAILED'}` : **à valider** |
+| `-TrainStatusMap` | `StatusTrain` → `Ref_RunStatus`. Défaut `@{0='RUNNING';1='SUCCEEDED';2='FAILED'}` |
 | `-InputEncoding` | `Auto` (défaut : UTF-8 si valide, sinon Windows-1252), `UTF8`, `Windows1252`, `Unicode` |
 | `-RowsPerBatch` | Nombre d'INSERT par batch `GO` dans le script généré (défaut 200) |
 
@@ -35,9 +35,16 @@ Nombre de lignes : 66
 ```
 
 - Le préfixe ODBC est retiré.
-- Le JSON coupé en lignes de ~2000 caractères (sortie `FOR JSON`, parfois au
-  milieu d'un mot) est recollé sans séparateur.
 - `Table vide : []` = table vide.
+- **Sauts de ligne au milieu du JSON :** le JSON d'une table va de
+  `--- Résultat JSON :` jusqu'à la section `--- Table :` suivante. Toutes ses lignes
+  sont recollées **sans séparateur**, où que tombe la coupure : découpage `FOR JSON`
+  en morceaux de ~2000 caractères, retour à la ligne au milieu d'un mot ou d'une
+  chaîne, juste après un antislash, ou lignes vides intercalées.
+  - Une ligne vide est ignorée, sauf au milieu d'une chaîne JSON : ses espaces font
+    alors partie de la valeur.
+  - Les sauts CR LF, LF et CR seul sont reconnus.
+  - La colonne `LignesTxt` du rapport indique en combien de lignes le JSON était découpé.
 
 ## Contrôles du script PowerShell
 
@@ -50,8 +57,19 @@ Nombre de lignes : 66
    `Detection_Test` et `Segmentation_Test`, une ligne **sans `DocId`** est un log de
    l'IHM (« Start MailSend Exception… »), pas un résultat d'inférence. Elle n'est
    pas migrée, et le nombre de lignes écartées est affiché.
-4. **Tables sans cible** (`Logs_IHM`, `Parameters`, `Processor`, `Pipeline*`) :
+4. **Colonnes** (`COLONNES` / `STRUCTURE`) : une table vide dans un environnement
+   peut être remplie dans un autre. Le script affiche :
+   - chaque colonne présente dans l'export mais non reprise par la migration, par
+     exemple une métrique `mAP50` inconnue : sa donnée serait perdue ;
+   - chaque ligne à laquelle il manque une colonne obligatoire (identifiant,
+     parent…), avec le nom de la colonne attendue.
+
+   Les noms sont comparés en respectant la casse, comme `OPENJSON`.
+5. **Tables sans cible** (`Logs_IHM`, `Parameters`, `Processor`, `Pipeline*`) :
    contrôlées et affichées, mais pas migrées.
+
+Avec `-Strict`, tout écart, colonne non reprise ou colonne obligatoire manquante
+sur une table migrée bloque la génération du script SQL.
 
 ## Le script SQL généré
 
@@ -100,15 +118,25 @@ obligatoire, on écrit `MIGRATION`.
 - Une association dont la version ou l'élément est introuvable.
 - Une valeur trop longue ou invalide pour la colonne cible.
 
-## À valider avant la migration de production
+## Ajouter une colonne ou une métrique
 
-1. **`-TrainStatusMap`** : 0 = `RUNNING`, 1 = `SUCCEEDED`, 2 = `FAILED`. Cette
-   correspondance a été déduite des données : statut 1 pour les entraînements longs
-   terminés par « End Training », statut 2 pour les arrêts au bout de quelques secondes.
-2. **Noms de colonnes des tables vides ou non visibles dans l'extrait**
-   (`ModelDetection_*`, `ModelSegmentation_*`, `Detection_Test`, `Segmentation_Test`,
-   `DocumentField`, `DocumentProperty`) : ils ont été déduits par analogie
-   (`IdModelDetectionVersion`, `IdField`, `NameField`…). S'ils diffèrent, la
-   migration s'arrête avec « Identifiant source introuvable » et le nom de la table.
-   Il suffit alors d'ajouter le nom de colonne réel dans le `OPENJSON ... WITH`
-   correspondant.
+Si le contrôle signale une colonne non reprise (ex. `COLONNES ModelDetection_Version : mAP50`) :
+
+- **Métrique :**
+  1. Ajouter la colonne à `$MetricKeys` en tête du script PowerShell : `'mAP50' = 'MAP50'`.
+  2. Ajouter le code dans `1_tables/00_Ref_Metric.sql`, puis rejouer ce script.
+- **Autre colonne :**
+  1. L'ajouter à la liste `Known` du type de table dans `$KindSpecs`.
+  2. L'ajouter au `OPENJSON ... WITH` correspondant du script SQL intégré.
+  3. L'ajouter à l'`INSERT` correspondant.
+- **Colonne volontairement ignorée :** l'ajouter à la liste `Skipped`.
+
+Les noms des colonnes des tables vides dans l'extrait de référence ont été déduits
+par analogie avec les autres tables :
+- `ModelDetection_*` et `ModelSegmentation_*` : `IdModelDetectionVersion`, ou
+  `IdModelVersion` comme pour le découpage ;
+- `Detection_Test` et `Segmentation_Test` : `IdDetection`, `IdSegmentation` ;
+- `DocumentField` et `DocumentProperty` : `IdField`, `NameField`, etc.
+
+S'ils diffèrent dans un autre environnement, le contrôle `COLONNES` / `STRUCTURE`
+le signale avant toute exécution.

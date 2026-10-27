@@ -245,9 +245,9 @@ dans les scripts `1_tables` (idempotents, y compris sur une base déjà déploy�
 ## 6. Points ouverts et recommandations
 
 1. **Migration des données ML historiques** : voir [`4_migration_ml/`](./4_migration_ml/README.md).
-   Valider la correspondance des statuts d'entraînement (`StatusTrain` 0 / 1 / 2) et
-   les noms de colonnes des tables vides dans l'extrait (Detection, Segmentation,
-   DocumentField, DocumentProperty), déduits par analogie.
+   Le script contrôle les colonnes de chaque export : une colonne non reprise
+   (table vide dans l'extrait de référence mais remplie dans un autre
+   environnement) est signalée avant toute exécution.
 2. **`ProjectType` et `TaskType`.** Si les valeurs de `ProjectType` des projets
    LLM correspondent à des types de tâche, les deux colonnes peuvent être
    fusionnées dans `TaskType`. À vérifier avec
