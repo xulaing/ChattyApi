@@ -10,6 +10,24 @@ GO
 -- La version testée est connue via [Evaluation] : elle n'est pas recopiée ici
 -- (dans le schéma PostgreSQL, metric portait à la fois la version et le test_run,
 -- ce qui permettait une incohérence entre les deux).
+-- [EvaluationId] en uniqueidentifier : même type que [Evaluation].[Id].
+-- =======================================================
+-- 0. TABLE CRÉÉE PAR UNE VERSION PRÉCÉDENTE AVEC UN [EvaluationId] int
+--    Vide : supprimée puis recréée en section 1 ; non vide : arrêt.
+-- =======================================================
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'[dbo].[Evaluation_Metric]') AND name = N'EvaluationId'
+      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+) BEGIN
+    IF EXISTS (SELECT 1 FROM [dbo].[Evaluation_Metric]) BEGIN
+        RAISERROR ('ERREUR CRITIQUE : [Evaluation_Metric] contient des données avec un [EvaluationId] non uniqueidentifier. Conversion à traiter manuellement.', 16, 1);
+        RETURN;
+    END
+    DROP TABLE [dbo].[Evaluation_Metric];
+    PRINT 'Table [dbo].[Evaluation_Metric] (EvaluationId int, vide) supprimée pour être recréée.';
+END
+GO
 -- =======================================================
 -- 1. CRÉATION DE LA TABLE (Si elle n'existe pas)
 --    Clé primaire seule : défauts, clés étrangères, contrôles et index
@@ -23,7 +41,7 @@ AND type in (N'U')
 ) BEGIN
 PRINT 'Création de la table [dbo].[Evaluation_Metric]...';
 CREATE TABLE [dbo].[Evaluation_Metric](
-    [EvaluationId] [int] NOT NULL,
+    [EvaluationId] [uniqueidentifier] NOT NULL,
     [MetricCode] [varchar](30) NOT NULL,
     [Value] [float] NOT NULL,
     CONSTRAINT [PK_Evaluation_Metric] PRIMARY KEY CLUSTERED ([EvaluationId] ASC, [MetricCode] ASC)

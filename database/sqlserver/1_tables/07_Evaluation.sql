@@ -5,6 +5,31 @@ GO
 PRINT '=== DÉBUT DE LA MIGRATION [dbo].[Evaluation] ==='
 GO
 -- =======================================================
+-- 0. [CORRECTIF] [Id] EN uniqueidentifier (type de la base existante)
+--    Une table créée avec un [Id] int par une version précédente de ce script :
+--    vide, elle est supprimée puis recréée en section 1 (les clés étrangères qui la
+--    référencent sont retirées puis recréées par leurs scripts) ; non vide, arrêt.
+-- =======================================================
+IF EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID(N'[dbo].[Evaluation]') AND name = N'Id'
+      AND TYPE_NAME(system_type_id) <> N'uniqueidentifier'
+) BEGIN
+    IF EXISTS (SELECT 1 FROM [dbo].[Evaluation]) BEGIN
+        RAISERROR ('ERREUR CRITIQUE : [Evaluation] contient des données avec un [Id] non uniqueidentifier. Conversion à traiter manuellement.', 16, 1);
+        RETURN;
+    END
+    DECLARE @DropFk NVARCHAR(MAX) = N'';
+    SELECT @DropFk += N'ALTER TABLE ' + QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.' + QUOTENAME(OBJECT_NAME(parent_object_id))
+                    + N' DROP CONSTRAINT ' + QUOTENAME(name) + N';'
+    FROM sys.foreign_keys
+    WHERE referenced_object_id = OBJECT_ID(N'[dbo].[Evaluation]');
+    IF @DropFk <> N'' EXEC sys.sp_executesql @DropFk;
+    DROP TABLE [dbo].[Evaluation];
+    PRINT 'Table [dbo].[Evaluation] (Id int, vide) supprimée pour être recréée avec un Id uniqueidentifier.';
+END
+GO
+-- =======================================================
 -- 1. CRÉATION DE LA TABLE (Si elle n'existe pas)
 -- =======================================================
 IF NOT EXISTS (
@@ -18,7 +43,8 @@ AND type in (N'U')
 ) BEGIN
 PRINT 'Création de la table [dbo].[Evaluation]...';
 CREATE TABLE [dbo].[Evaluation](
-    [Id] [int] IDENTITY(1, 1) NOT NULL,
+    -- [CORRECTIF] uniqueidentifier, comme dans la base existante (default posé en section 3)
+    [Id] [uniqueidentifier] NOT NULL,
     [ProjectId] [int] NOT NULL,
     [VersionNumber] [int] NOT NULL,
     [Name] [nvarchar](max) NULL,
@@ -173,6 +199,45 @@ END
 GO
 -- Batch séparé : les colonnes ajoutées ci-dessus existent à la compilation
 DECLARE @df SYSNAME, @dfDef NVARCHAR(MAX), @dfOld NVARCHAR(300);
+-- [CORRECTIF] default de [Id] : NEWSEQUENTIALID() (GUID croissants, pas de fragmentation).
+-- Un default déjà présent dans la base existante est conservé (signalé s'il diffère).
+SET @df = NULL; SET @dfDef = NULL;
+SELECT @df = name, @dfDef = definition
+FROM sys.default_constraints
+WHERE parent_object_id = OBJECT_ID(N'[dbo].[Evaluation]')
+  AND parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Evaluation]'), 'Id', 'ColumnId');
+IF COL_LENGTH(N'[dbo].[Evaluation]', N'Id') IS NULL BEGIN
+    PRINT 'ATTENTION : colonne [Evaluation].[Id] absente, default [DF_Evaluation_Id] non traité.';
+END
+-- Aucun default sur la colonne (ni nommé, ni anonyme) : création
+ELSE IF @df IS NULL BEGIN
+    IF OBJECT_ID(N'[dbo].[DF_Evaluation_Id]') IS NOT NULL BEGIN
+        PRINT 'ATTENTION : le nom [DF_Evaluation_Id] est déjà utilisé par un autre objet, default non créé.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Evaluation] ADD CONSTRAINT [DF_Evaluation_Id] DEFAULT (newsequentialid()) FOR [Id];
+        PRINT 'Default [DF_Evaluation_Id] ajouté.';
+    END
+END
+-- Un default existe déjà (éventuellement anonyme) : on n'en crée JAMAIS un second
+ELSE BEGIN
+    IF @df <> N'DF_Evaluation_Id' BEGIN
+        IF OBJECT_ID(N'[dbo].[DF_Evaluation_Id]') IS NOT NULL BEGIN
+            PRINT 'ATTENTION : default ' + @df + ' conservé, le nom [DF_Evaluation_Id] est déjà utilisé par un autre objet.';
+        END
+        ELSE BEGIN
+            SET @dfOld = N'[dbo].' + QUOTENAME(@df);
+            EXEC sp_rename @dfOld, N'DF_Evaluation_Id', N'OBJECT';
+            PRINT 'Default ' + @df + ' renommé en [DF_Evaluation_Id].';
+        END
+    END
+    ELSE BEGIN
+        PRINT 'Default [DF_Evaluation_Id] existant.';
+    END
+    IF @dfDef <> N'(newsequentialid())' BEGIN
+        PRINT 'ATTENTION : le default de [Evaluation].[Id] vaut ' + @dfDef + ' au lieu de (newsequentialid()) (conservé, à vérifier).';
+    END
+END
 SET @df = NULL; SET @dfDef = NULL;
 SELECT @df = name, @dfDef = definition
 FROM sys.default_constraints

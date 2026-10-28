@@ -974,20 +974,20 @@ BEGIN TRY
                 TriggeredBy, TestDataCount, IsItc, Comment)
         VALUES (s.ProjectId, s.VersionNumber, CASE WHEN s.TestNb IS NOT NULL THEN CONCAT(N'Test ', s.TestNb) END, s.DateCreate,
                 s.TestDataPath, s.AnnotationFile, s.TestResultsPath, s.TriggeredBy, s.TestDataCount, ISNULL(s.IsITC, 0), s.Comment)
-    OUTPUT s.SourceTable, s.LegacyId, s.LegacyVersionId, N'Evaluation', inserted.Id, NULL
+    OUTPUT s.SourceTable, s.LegacyId, s.LegacyVersionId, N'Evaluation', NULL, inserted.Id   -- [Evaluation].[Id] : uniqueidentifier
     INTO dbo.Migration_LegacyMap (SourceTable, SourceId, SourceParentId, TargetTable, TargetId, TargetGuid);
     SET @n = @@ROWCOUNT; PRINT CONCAT(N'Evaluation                       : ', @n, N' ligne(s) insérée(s)');
 
     -- 5. Métriques de test -> Evaluation_Metric -------------------------
     SET @Step = N'Métriques de tests -> Evaluation_Metric';
     INSERT INTO dbo.Evaluation_Metric (EvaluationId, MetricCode, Value)
-    SELECT mp.TargetId, mk.MetricCode, CONVERT(float, j.[value])
+    SELECT mp.TargetGuid, mk.MetricCode, CONVERT(float, j.[value])
     FROM #Test x
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = x.SourceTable AND mp.SourceId = x.LegacyId
     CROSS APPLY OPENJSON(x.RowJson) j
     JOIN #MetricKey mk ON mk.JsonKey = j.[key] COLLATE Latin1_General_CS_AS
     WHERE j.[type] = 2
-      AND NOT EXISTS (SELECT 1 FROM dbo.Evaluation_Metric e WHERE e.EvaluationId = mp.TargetId AND e.MetricCode = mk.MetricCode);
+      AND NOT EXISTS (SELECT 1 FROM dbo.Evaluation_Metric e WHERE e.EvaluationId = mp.TargetGuid AND e.MetricCode = mk.MetricCode);
     SET @n = @@ROWCOUNT; PRINT CONCAT(N'Evaluation_Metric                : ', @n, N' ligne(s) insérée(s)');
 
     -- 6. *TrainTrack -> Training_Run -----------------------------------

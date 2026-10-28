@@ -93,7 +93,7 @@ erDiagram
         bit IsItc "MODEL (défaut 0)"
     }
     Evaluation {
-        int Id PK
+        uniqueidentifier Id PK
         int ProjectId FK
         int VersionNumber FK
         nvarchar EvalPath "ex-test_data_path"
@@ -108,7 +108,7 @@ erDiagram
         float Value
     }
     Evaluation_Metric {
-        int EvaluationId PK
+        uniqueidentifier EvaluationId PK
         varchar MetricCode PK
         float Value
     }
@@ -152,8 +152,8 @@ est plus compact (4 octets contre 16, dans chaque index et chaque clé
 |---|---|---|
 | `Training_Run` | **GUID** | Identifiant partagé avec le pipeline d'entraînement (dossiers de sortie, logs), qui peut le générer avant l'insertion. |
 | `Inference_Request` | **GUID** | Identifiant de corrélation avec le service d'inférence, renvoyé au client (non devinable). Table de traces, comme `Project_History`, déjà en GUID. |
-| `Project_History` | GUID (existant) | Inchangé. |
-| `Team`, `User`, `Project`, `Project_Version`, `Evaluation` | `int` (existant) | Passer en GUID casserait le contrat avec l'application existante (identifiants dans l'API et le code), ainsi que les triggers (`Project_History.EntityId`, `UpdatedBy` et `DeleterId` en `int`) et la procédure. Il faudrait aussi réécrire toutes les FK et migrer les données, pour aucun gain : ces identifiants sont générés et utilisés uniquement par la base. |
+| `Project_History`, `Evaluation` | GUID (existant) | Inchangés. `Evaluation_Metric.EvaluationId` est donc aussi un GUID. |
+| `Team`, `User`, `Project`, `Project_Version` | `int` (existant) | Passer en GUID casserait le contrat avec l'application existante (identifiants dans l'API et le code), ainsi que les triggers (`Project_History.EntityId`, `UpdatedBy` et `DeleterId` en `int`) et la procédure. Il faudrait aussi réécrire toutes les FK et migrer les données, pour aucun gain : ces identifiants sont générés et utilisés uniquement par la base. |
 | `Document_Class`, `Document_Field`, `Document_Property`, `Document_Request` | `int` | Référentiel interne, très joint, sans génération externe. Cohérent avec `Project`. |
 | `Ref_*` | code `varchar` | Clé naturelle lisible (`'DETECTION'`, `'F1'`). |
 | Métriques, associations | clé composite | Pas d'identifiant technique : la paire de clés étrangères est la clé. |
