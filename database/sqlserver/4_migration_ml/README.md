@@ -165,7 +165,7 @@ sur une table migrée bloque la génération du script SQL.
 
 | Ancienne table | Nouvelle table | Règle |
 |---|---|---|
-| `Model` | `Project` (`Category = 'MODEL'`) | `TaskType` déduit de `ProjectType` (sans casse ni accents, ex. « Découpage » → `DECOUPAGE`), sinon de la famille de ses versions |
+| `Model` | `Project` (`Category = 'MODEL'`) | `ProjectType` = libellé de `Ref_TaskType`, reconnu sans casse ni accents (ex. « decoupage » → « Découpage »), sinon déduit de la famille de ses versions |
 | `Model*_Version` (×5) | `Project_Version` | `InProd` → `DeliveredToProduction`, `Comment` → `Description` |
 | métriques des versions | `Project_Version_Metric` | `Accuracy`, `ErrorRate`, `PrecisionScore`, `RecallScore`, `f1_score`, `kappa`, `AP_*`, `Recall_*`, `MeanErrors`, `NbErrors` |
 | `Model*_Version_Test` (×5) | `Evaluation` (+ `Evaluation_Metric`) | `VersionNb` du test → `Name = 'Test n'` ; `TestDataPath` → `EvalPath` ; `TestResultsPath` → `PredictionFile` |

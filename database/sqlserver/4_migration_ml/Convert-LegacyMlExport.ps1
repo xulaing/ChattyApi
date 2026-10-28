@@ -576,6 +576,8 @@ WHERE OBJECT_ID(r.Obj, N'U') IS NULL OR (r.Col IS NOT NULL AND COL_LENGTH(r.Obj,
 IF COL_LENGTH(N'dbo.Evaluation', N'Id') IS NOT NULL
    AND (SELECT TYPE_NAME(system_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.Evaluation') AND name = N'Id') <> N'uniqueidentifier'
     SET @Err += N'  - dbo.Evaluation.Id n''est pas un uniqueidentifier : déployer 1_tables/07_Evaluation.sql et 09_Evaluation_Metric.sql' + @nl;
+IF COL_LENGTH(N'dbo.Project', N'TaskType') IS NOT NULL
+    SET @Err += N'  - dbo.Project.TaskType existe encore (doublon de ProjectType) : redéployer 1_tables/03_Project.sql' + @nl;
 IF OBJECT_ID(N'dbo.Project', N'U') IS NULL
     SET @Err += N'    (dbo.Project absente : vérifier la base sélectionnée dans SSMS.)' + @nl;
 
@@ -694,6 +696,8 @@ BEGIN TRY
     FROM #Required r
     WHERE OBJECT_ID(r.Obj, N'U') IS NULL OR (r.Col IS NOT NULL AND COL_LENGTH(r.Obj, r.Col) IS NULL);
     IF @Msg IS NOT NULL RAISERROR (N'Objets absents de la base, à déployer d''abord : %s', 16, 1, @Msg);
+    IF COL_LENGTH(N'dbo.Project', N'TaskType') IS NOT NULL
+        RAISERROR (N'dbo.Project.TaskType existe encore (doublon de ProjectType) : redéployer 1_tables/03_Project.sql.', 16, 1);
     SET @OrphanPolicy = ISNULL((SELECT TOP (1) OrphanPolicy FROM #Config), 'REJECT');
 
     SET @Step = N'Contrôle du chargement';
@@ -982,17 +986,20 @@ BEGIN TRY
 
     -- 1. Model -> Project ----------------------------------------------
     SET @Step = N'Model -> Project';
+    -- ProjectType = libellé du type de tâche (« Classification », « Découpage »...) :
+    -- c'est la seule colonne qui porte le type d'un modèle.
     MERGE dbo.Project AS t
     USING (
-        SELECT m.*, w.Resolved AS CreatedBy
+        SELECT m.*, w.Resolved AS CreatedBy, r.Label AS TaskLabel
         FROM #Model m
         LEFT JOIN #Who w ON w.Raw = LTRIM(RTRIM(m.Creator))
+        LEFT JOIN dbo.Ref_TaskType r ON r.Code = m.TaskType
         WHERE NOT EXISTS (SELECT 1 FROM dbo.Migration_LegacyMap mp WHERE mp.SourceTable = m.SourceTable AND mp.SourceId = m.LegacyId)
     ) AS s
     ON 1 = 0
     WHEN NOT MATCHED THEN
-        INSERT (Name, ProjectType, IsActive, CreatedAt, CreatedBy, Category, TaskType, AssociatedSolutionId)
-        VALUES (s.Name, s.ProjectType, 1, COALESCE(s.DateCreate, SYSDATETIME()), s.CreatedBy, 'MODEL', s.TaskType, s.AssociatedSolutionId)
+        INSERT (Name, ProjectType, IsActive, CreatedAt, CreatedBy, Category, AssociatedSolutionId)
+        VALUES (s.Name, COALESCE(s.TaskLabel, s.ProjectType), 1, COALESCE(s.DateCreate, SYSDATETIME()), s.CreatedBy, 'MODEL', s.AssociatedSolutionId)
     OUTPUT s.SourceTable, s.LegacyId, NULL, N'Project', inserted.Id, NULL
     INTO dbo.Migration_LegacyMap (SourceTable, SourceId, SourceParentId, TargetTable, TargetId, TargetGuid);
     SET @n = @@ROWCOUNT; PRINT CONCAT(N'Project                          : ', @n, N' ligne(s) insérée(s)');
@@ -1383,7 +1390,7 @@ BEGIN TRY
         PRINT N'Requête : SELECT SourceTable, SourceId, Reason, RowJson, RejectedAt FROM dbo.Migration_Rejected ORDER BY SourceTable, SourceId;';
     END
     ELSE
-        PRINT N'Toutes les lignes chargées ont été insérées (aucune ligne rejetée).';
+        PRINT N'Aucune ligne rejetée : toutes les lignes chargées sont migrées (par cette exécution ou une précédente).';
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;

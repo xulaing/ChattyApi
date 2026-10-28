@@ -53,7 +53,6 @@ BEGIN
     [p].[Description],
     [p].[ProjectType],
     [p].[Category],  -- [FUSION ML]
-    [p].[TaskType],  -- [FUSION ML]
     [p].[CreatedAt],
     [p].[CreatedBy],
     [u_creator].[Lastname] AS [CreatorName],

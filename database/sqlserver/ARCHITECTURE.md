@@ -33,7 +33,7 @@ relevés, et leur correction dans la version SQL Server :
 | 3 | `test_run` recrée un concept qui existe déjà : `Evaluation` | `test_run` est fusionné dans `Evaluation` (une version testée sur un jeu de données annoté). Les évaluations LLM peuvent ainsi, elles aussi, porter des métriques. |
 | 4 | `in_prod` fait double emploi avec `DeliveredToProduction`. Le brouillon `schema fusionne.sql` utilisait `state = 'production'`, une valeur qui n'existe pas : `State` vaut `ONGOING` / `BLOCKED` / `ARCHIVED` | `in_prod` → `DeliveredToProduction` (existant). |
 | 5 | Index unique filtré « une seule version en prod » | Incompatible avec le trigger existant : l'`UPDATE` qui flague la nouvelle version échouerait avant que le trigger ne déflague l'ancienne. La règle reste portée par `trg_ProjectVersion_Update`. |
-| 6 | `project_type` retypé en `ENUM` | Cette colonne contient le texte libre des projets LLM, qui serait perdu. Elle est conservée telle quelle ; on ajoute `Category` (LLM / MODEL) et `TaskType` (ex-`model_type`). |
+| 6 | `project_type` retypé en `ENUM` | Cette colonne contient le texte libre des projets LLM, qui serait perdu. Elle est conservée telle quelle ; on ajoute `Category` (LLM / MODEL). Le type de tâche d'un modèle (ex-`model_type`) est porté par `ProjectType` (libellé de `Ref_TaskType`, ex. « Classification ») : pas de colonne `TaskType` en double. |
 | 7 | `TEXT` partout | Types bornés (`nvarchar(50/100/200)`, `varchar(n)` pour les codes) là où on indexe, compare ou impose l'unicité ; `nvarchar(max)` réservé aux textes libres et aux chemins. |
 | 8 | Clés `BIGINT` | Les FK doivent avoir le même type que la clé visée : `int`, comme `Project` et `Project_Version`. `uniqueidentifier` pour `Training_Run` et `Inference_Request` (voir section 2.1). |
 | 9 | `ON DELETE CASCADE` partout | Cascade seulement pour les données possédées par la version (métriques, entraînements, associations). `SET NULL` pour les inférences, qui gardent leur trace. Aucune action pour les évaluations : pas de suppression silencieuse de résultats. |
@@ -49,7 +49,7 @@ relevés, et leur correction dans la version SQL Server :
 ```mermaid
 erDiagram
     Ref_ProjectCategory ||--o{ Project : "Category"
-    Ref_TaskType ||--o{ Project : "TaskType"
+    Ref_TaskType ||--o{ Project : "Label = ProjectType (MODEL)"
     Ref_TaskType ||--o{ Inference_Request : "TaskType"
     Project ||--o{ Project_Version : ""
     Project ||--o{ Project_Member : ""
@@ -73,9 +73,8 @@ erDiagram
     Project {
         int Id PK
         nvarchar Name
-        nvarchar ProjectType "texte libre LLM (inchangé)"
+        nvarchar ProjectType "type ; libellé Ref_TaskType si MODEL (obligatoire)"
         varchar Category FK "LLM | MODEL (défaut LLM)"
-        varchar TaskType FK "obligatoire si MODEL"
         uniqueidentifier AssociatedSolutionId "ex-model (GUID)"
         bit IsActive
     }
@@ -189,7 +188,7 @@ chaque exécution.
 | Ancien (schéma ML) | Nouveau |
 |---|---|
 | `model.name` / `project_type` / `created_by` / `created_at` | `Project.Name` / `ProjectType` / `CreatedBy` / `CreatedAt` |
-| `model.model_type` | `Project.TaskType` (+ `Category = 'MODEL'`) |
+| `model.model_type` | `Project.ProjectType` = libellé `Ref_TaskType` (+ `Category = 'MODEL'`) |
 | `model.associated_solution_id` | `Project.AssociatedSolutionId` |
 | `model_version.version_nb` | `Project_Version.VersionNumber` |
 | `model_version.comment` | `Project_Version.Description` |
@@ -222,7 +221,7 @@ ORDER BY CASE WHEN r.LowerIsBetter = 1 THEN m.Value ELSE -m.Value END;
 | Changement | Effet |
 |---|---|
 | `Project.Category` NOT NULL, défaut `'LLM'` | Les projets existants et les insertions de l'application actuelle (qui ne connaît pas la colonne) restent des projets LLM. Rien à modifier côté application. |
-| `GetListProjectWithVersion` : nouveau paramètre `@Category` (défaut `'LLM'`) | Un appel existant (`@PersoId` seul) renvoie la même liste qu'avant, sans les modèles. Le résultat a **2 colonnes de plus** (`Category`, `TaskType`) : à vérifier si l'application lit les colonnes par position. |
+| `GetListProjectWithVersion` : nouveau paramètre `@Category` (défaut `'LLM'`) | Un appel existant (`@PersoId` seul) renvoie la même liste qu'avant, sans les modèles. Le résultat a **1 colonne de plus** (`Category`) : à vérifier si l'application lit les colonnes par position. |
 | `UQ_Project_Version_ProjectId_VersionNumber` | Un même numéro de version ne peut plus exister deux fois dans un projet. Si des doublons existent, le script ne crée pas la contrainte et affiche un avertissement avec la requête pour les lister. |
 | `FK_Evaluation_ProjectVersion` (composite, `ON UPDATE CASCADE`) | Une évaluation doit viser une version existante. **Supprimer une version qui a des évaluations est désormais refusé** : l'application doit d'abord supprimer ces évaluations. Jusqu'ici, elles restaient orphelines. En cas d'orphelins existants, le script ne crée pas la FK et affiche un avertissement. |
 | Colonnes `bit` ajoutées (`IsItc`, `LowerIsBetter`) | Défaut à 0. |
@@ -248,10 +247,15 @@ dans les scripts `1_tables` (idempotents, y compris sur une base déjà déploy�
    Le script contrôle les colonnes de chaque export : une colonne non reprise
    (table vide dans l'extrait de référence mais remplie dans un autre
    environnement) est signalée avant toute exécution.
-2. **`ProjectType` et `TaskType`.** Si les valeurs de `ProjectType` des projets
-   LLM correspondent à des types de tâche, les deux colonnes peuvent être
-   fusionnées dans `TaskType`. À vérifier avec
-   `SELECT ProjectType, COUNT(*) FROM dbo.Project GROUP BY ProjectType;`.
+2. **`ProjectType` et `TaskType` (résolu).** Les deux colonnes portaient la même
+   valeur (`Classification` / `CLASSIFICATION`). `Project.TaskType` est supprimée par
+   `03_Project.sql` : sa valeur est reportée dans `ProjectType` quand celui-ci est
+   vide, et la colonne est conservée (message `ATTENTION`) si une ligne a des valeurs
+   différentes. `CK_Project_ProjectType_Model` rend `ProjectType` obligatoire pour un
+   `MODEL`. Sans clé étrangère (`ProjectType` est en `nvarchar(max)`), l'application
+   doit écrire un libellé de `Ref_TaskType` pour un modèle.
+   `Inference_Request.TaskType` (code) est conservée : c'est la seule colonne de type
+   de cette table.
 3. **Règles non portées par la base.** `Training_Run` et les colonnes ML de
    `Project_Version` n'ont de sens que pour un projet `MODEL`. Ce n'est pas
    vérifié en base, car il faudrait un trigger : c'est à la couche applicative

@@ -27,7 +27,6 @@ CREATE TABLE [dbo].[Project](
     [UpdatedBy] [nvarchar](max) NULL,
     -- [FUSION ML] colonnes issues de l'ancienne table model (voir section 3)
     [Category] [varchar](10) NOT NULL,
-    [TaskType] [varchar](20) NULL,
     [AssociatedSolutionId] [uniqueidentifier] NULL,
     CONSTRAINT [PK_Project] PRIMARY KEY CLUSTERED ([Id] ASC) WITH (
         PAD_INDEX = OFF,
@@ -174,11 +173,13 @@ GO
 --    - [Category]             : 'LLM' (projets existants) ou 'MODEL' (modèle entraîné)
 --                               -> [Ref_ProjectCategory]. Les lignes existantes
 --                               reçoivent 'LLM' via le default.
---    - [TaskType]             : ex-model.model_type -> [Ref_TaskType].
---                               Obligatoire pour un MODEL, facultatif pour un LLM.
+--    - Type de tâche d'un MODEL : porté par [ProjectType] (« Classification »,
+--                               « Découpage »...), le libellé de [Ref_TaskType].
+--                               Obligatoire pour un MODEL. Plus de colonne [TaskType] :
+--                               elle répétait [ProjectType] en majuscules.
 --    - [AssociatedSolutionId] : ex-model.AssociatedSolutionId, un GUID (aucune table
 --                               cible connue dans cette base : pas de FK).
---    [ProjectType] (texte libre existant) n'est pas modifié.
+--    [ProjectType] (colonne existante) n'est pas modifiée.
 -- =======================================================
 PRINT 'Vérification des colonnes de fusion ML...'
 GO
@@ -191,12 +192,67 @@ END
 ELSE BEGIN
     PRINT 'Colonne [Category] déjà présente.';
 END
-IF COL_LENGTH(N'[dbo].[Project]', N'TaskType') IS NULL BEGIN
-    ALTER TABLE [dbo].[Project] ADD [TaskType] [varchar](20) NULL;
-    PRINT 'Colonne [TaskType] ajoutée.';
-END
-ELSE BEGIN
-    PRINT 'Colonne [TaskType] déjà présente.';
+-- [FUSION ML] Colonne [TaskType] créée par une version précédente de ce script :
+-- doublon de [ProjectType] (même valeur, en majuscules). Supprimée après report de
+-- sa valeur dans [ProjectType] quand celui-ci est vide.
+-- (SQL dynamique : la colonne peut ne pas exister à la compilation du batch)
+IF COL_LENGTH(N'[dbo].[Project]', N'TaskType') IS NOT NULL BEGIN
+    DECLARE @Conflits NVARCHAR(MAX), @sql NVARCHAR(MAX), @obj SYSNAME, @colId INT;
+    -- 1. [ProjectType] vide : reçoit le libellé du type de tâche
+    EXEC sys.sp_executesql N'
+        UPDATE p SET p.[ProjectType] = r.[Label]
+        FROM [dbo].[Project] p
+        JOIN [dbo].[Ref_TaskType] r ON r.[Code] = p.[TaskType]
+        WHERE NULLIF(LTRIM(RTRIM(p.[ProjectType])), N'''') IS NULL;
+        DECLARE @n INT = @@ROWCOUNT;
+        IF @n > 0 PRINT ''[ProjectType] renseigné depuis [TaskType] : '' + CAST(@n AS varchar(10)) + '' ligne(s).'';';
+    -- 2. Valeurs contradictoires (ni le code ni le libellé, sans casse ni accents) :
+    --    la colonne est conservée pour ne rien perdre
+    EXEC sys.sp_executesql N'
+        SELECT @c = STRING_AGG(CONVERT(nvarchar(max), CONCAT(N''Id '', p.[Id], N'' : ProjectType = '', p.[ProjectType], N'', TaskType = '', p.[TaskType])), N''; '')
+        FROM [dbo].[Project] p
+        LEFT JOIN [dbo].[Ref_TaskType] r ON r.[Code] = p.[TaskType]
+        WHERE p.[TaskType] IS NOT NULL
+          AND LTRIM(RTRIM(p.[ProjectType])) COLLATE Latin1_General_CI_AI NOT IN
+              (p.[TaskType] COLLATE Latin1_General_CI_AI, ISNULL(r.[Label], N'''') COLLATE Latin1_General_CI_AI);',
+        N'@c NVARCHAR(MAX) OUTPUT', @c = @Conflits OUTPUT;
+    IF @Conflits IS NOT NULL BEGIN
+        PRINT 'ATTENTION : [Project].[TaskType] conservée, valeurs différentes de [ProjectType] à corriger puis relancer ce script : ' + LEFT(@Conflits, 3500);
+    END
+    ELSE BEGIN
+        SET @colId = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'TaskType', 'ColumnId');
+        -- 3. Contraintes et index qui utilisent la colonne (recherchés par colonne)
+        WHILE 1 = 1 BEGIN
+            SET @obj = NULL;
+            SELECT TOP (1) @obj = fk.name FROM sys.foreign_keys fk
+            JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+            WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[Project]') AND fkc.parent_column_id = @colId;
+            IF @obj IS NULL
+                SELECT TOP (1) @obj = name FROM sys.check_constraints
+                WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+                  AND (parent_column_id = @colId OR definition LIKE N'%\[TaskType\]%' ESCAPE N'\');
+            IF @obj IS NULL
+                SELECT TOP (1) @obj = name FROM sys.default_constraints
+                WHERE parent_object_id = OBJECT_ID(N'[dbo].[Project]') AND parent_column_id = @colId;
+            IF @obj IS NULL BREAK;
+            SET @sql = N'ALTER TABLE [dbo].[Project] DROP CONSTRAINT ' + QUOTENAME(@obj) + N';';
+            EXEC sys.sp_executesql @sql;
+            PRINT 'Contrainte ' + QUOTENAME(@obj) + ' (sur [TaskType]) supprimée.';
+        END
+        WHILE 1 = 1 BEGIN
+            SET @obj = NULL;
+            SELECT TOP (1) @obj = i.name FROM sys.indexes i
+            JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            WHERE i.object_id = OBJECT_ID(N'[dbo].[Project]') AND ic.column_id = @colId AND i.is_primary_key = 0;
+            IF @obj IS NULL BREAK;
+            SET @sql = N'DROP INDEX ' + QUOTENAME(@obj) + N' ON [dbo].[Project];';
+            EXEC sys.sp_executesql @sql;
+            PRINT 'Index ' + QUOTENAME(@obj) + ' (sur [TaskType]) supprimé.';
+        END
+        -- 4. Suppression de la colonne
+        EXEC sys.sp_executesql N'ALTER TABLE [dbo].[Project] DROP COLUMN [TaskType];';
+        PRINT 'Colonne [TaskType] supprimée (doublon de [ProjectType]).';
+    END
 END
 -- Colonne créée en bigint par une version précédente de ce script : la donnée source est
 -- un GUID. Vide : la colonne est supprimée puis recréée ; sinon arrêt.
@@ -280,32 +336,22 @@ END
 ELSE BEGIN
     PRINT 'Clé étrangère [Project].[Category] -> [Ref_ProjectCategory] existante.';
 END
--- FK recherchée par colonne et table cible (et non par nom) : pas de doublon possible
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.foreign_keys fk
-    JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
-    WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[Project]')
-      AND fk.referenced_object_id = OBJECT_ID(N'[dbo].[Ref_TaskType]')
-      AND fkc.parent_column_id = COLUMNPROPERTY(OBJECT_ID(N'[dbo].[Project]'), 'TaskType', 'ColumnId')
-) BEGIN
-    ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [FK_Project_TaskType]
-        FOREIGN KEY ([TaskType]) REFERENCES [dbo].[Ref_TaskType] ([Code]);
-    PRINT 'Contrainte [FK_Project_TaskType] ajoutée.';
-END
-ELSE BEGIN
-    PRINT 'Clé étrangère [Project].[TaskType] -> [Ref_TaskType] existante.';
-END
--- Un modèle entraîné a forcément un type de tâche
+-- Un modèle entraîné a forcément un type de tâche ([ProjectType])
 IF NOT EXISTS (
     SELECT 1 FROM sys.check_constraints
-    WHERE name = N'CK_Project_TaskType_Model' AND parent_object_id = OBJECT_ID(N'[dbo].[Project]')
+    WHERE name = N'CK_Project_ProjectType_Model' AND parent_object_id = OBJECT_ID(N'[dbo].[Project]')
 ) BEGIN
-    ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [CK_Project_TaskType_Model] CHECK ([Category] <> 'MODEL' OR [TaskType] IS NOT NULL);
-    PRINT 'Contrainte [CK_Project_TaskType_Model] ajoutée.';
+    IF EXISTS (SELECT 1 FROM [dbo].[Project] WHERE [Category] = 'MODEL' AND NULLIF(LTRIM(RTRIM([ProjectType])), N'') IS NULL) BEGIN
+        PRINT 'ATTENTION : des projets MODEL n''ont pas de [ProjectType] : contrainte [CK_Project_ProjectType_Model] non créée.';
+    END
+    ELSE BEGIN
+        ALTER TABLE [dbo].[Project] WITH CHECK ADD CONSTRAINT [CK_Project_ProjectType_Model]
+            CHECK ([Category] <> 'MODEL' OR NULLIF(LTRIM(RTRIM([ProjectType])), N'') IS NOT NULL);
+        PRINT 'Contrainte [CK_Project_ProjectType_Model] ajoutée.';
+    END
 END
 ELSE BEGIN
-    PRINT 'Contrainte [CK_Project_TaskType_Model] existante.';
+    PRINT 'Contrainte [CK_Project_ProjectType_Model] existante.';
 END
 IF NOT EXISTS (
     SELECT 1 FROM sys.indexes
