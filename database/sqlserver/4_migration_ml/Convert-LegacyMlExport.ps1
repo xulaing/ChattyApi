@@ -46,6 +46,14 @@
 .PARAMETER RowsPerBatch
     Nombre d'INSERT de chargement par batch (GO) dans le script généré.
 
+.PARAMETER OrphanPolicy
+    Lignes dont le parent est introuvable (l'ancienne base n'avait pas de clés étrangères) :
+    version sans modèle, test sans version, entraînement sans modèle, champ sans classe,
+    association dont la version ou l'élément n'existe pas.
+      Reject (défaut) : écartées, conservées dans dbo.Migration_Rejected (raison + JSON
+                        d'origine) ; le reste est migré.
+      Fail            : la migration est annulée.
+
 .PARAMETER Strict
     Arrête sans générer de SQL si une table a un écart de nombre de lignes ou un
     JSON invalide. Recommandé pour la migration de production.
@@ -69,6 +77,9 @@ param(
 
     [ValidateRange(1, 1000)]
     [int]$RowsPerBatch = 200,
+
+    [ValidateSet('Reject', 'Fail')]
+    [string]$OrphanPolicy = 'Reject',
 
     [switch]$Strict
 )
@@ -141,12 +152,12 @@ $KindSpecs = @{
                           Known    = @('IdField', 'IdDocumentField', 'IdClass', 'IdDocumentClass', 'NameField', 'Name', 'DescriptionField', 'Description', 'CreatorField', 'Creator', 'DateCreateField', 'DateCreate', 'UpdaterField', 'Updater', 'DateUpdateField', 'DateUpdate'); Skipped = @() }
     DocumentProperty = @{ Required = @('IdProperty|IdDocumentProperty', 'NameProperty|Name')
                           Known    = @('IdProperty', 'IdDocumentProperty', 'NameProperty', 'Name', 'DescriptionProperty', 'Description', 'CreatorProperty', 'Creator', 'DateCreateProperty', 'DateCreate', 'UpdaterProperty', 'Updater', 'DateUpdateProperty', 'DateUpdate'); Skipped = @() }
-    ClassAssoc       = @{ Required = @('IdClass|IdDocumentClass', 'IdModel', 'IdModelVersion')
-                          Known    = @('IdClass', 'IdDocumentClass', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
-    FieldAssoc       = @{ Required = @('IdField|IdDocumentField', 'IdModel', 'IdModelVersion')
-                          Known    = @('IdField', 'IdDocumentField', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
-    PropertyAssoc    = @{ Required = @('IdProperty|IdDocumentProperty', 'IdModel', 'IdModelVersion')
-                          Known    = @('IdProperty', 'IdDocumentProperty', 'IdModel', 'IdModelVersion'); Skipped = @('IdAssociation') }
+    ClassAssoc       = @{ Required = @('IdAssociation', 'IdClass|IdDocumentClass', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdAssociation', 'IdClass', 'IdDocumentClass', 'IdModel', 'IdModelVersion'); Skipped = @() }
+    FieldAssoc       = @{ Required = @('IdAssociation', 'IdField|IdDocumentField', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdAssociation', 'IdField', 'IdDocumentField', 'IdModel', 'IdModelVersion'); Skipped = @() }
+    PropertyAssoc    = @{ Required = @('IdAssociation', 'IdProperty|IdDocumentProperty', 'IdModel', 'IdModelVersion')
+                          Known    = @('IdAssociation', 'IdProperty', 'IdDocumentProperty', 'IdModel', 'IdModelVersion'); Skipped = @() }
     DocumentRequest  = @{ Required = @('IdDocumentRequest', 'TypeDocumentRequest', 'NameDocumentRequest')
                           Known    = @('IdDocumentRequest', 'TypeDocumentRequest', 'NameDocumentRequest', 'DescriptionDocumentRequest', 'StatusDocumentRequest', 'CreatorDocumentRequest', 'DateCreateDocumentRequest', 'UpdaterDocumentRequest', 'DateUpdateDocumentRequest', 'CommentDocumentRequest', 'ResponseDocumentRequest'); Skipped = @() }
 }
@@ -520,7 +531,8 @@ IF COL_LENGTH(N'dbo.Project', N'Category') IS NULL
    OR OBJECT_ID(N'dbo.Inference_Request', N'U') IS NULL
    OR OBJECT_ID(N'dbo.Document_Request', N'U') IS NULL
    OR OBJECT_ID(N'dbo.Migration_LegacyMap', N'U') IS NULL
-    SET @Err += N'  - Schéma cible incomplet (ou mauvaise base sélectionnée) : déployer d''abord les scripts 1_tables, dont 19_Migration_LegacyMap.' + @nl;
+   OR OBJECT_ID(N'dbo.Migration_Rejected', N'U') IS NULL
+    SET @Err += N'  - Schéma cible incomplet (ou mauvaise base sélectionnée) : déployer d''abord les scripts 1_tables, dont 19_Migration_LegacyMap et 20_Migration_Rejected.' + @nl;
 
 -- Droits
 SELECT @Err += CONCAT(N'  - Droit ', p.Perm, N' manquant sur ', p.Obj, @nl)
@@ -540,6 +552,7 @@ FROM (VALUES
     (N'dbo.Project_Version_Document_Property', N'SELECT'), (N'dbo.Project_Version_Document_Property', N'INSERT'),
     (N'dbo.Document_Request', N'SELECT'), (N'dbo.Document_Request', N'INSERT'),
     (N'dbo.Migration_LegacyMap', N'SELECT'), (N'dbo.Migration_LegacyMap', N'INSERT'),
+    (N'dbo.Migration_Rejected', N'SELECT'), (N'dbo.Migration_Rejected', N'INSERT'), (N'dbo.Migration_Rejected', N'DELETE'),
     (N'dbo.[User]', N'SELECT'), (N'dbo.Ref_TaskType', N'SELECT')
 ) p (Obj, Perm)
 WHERE OBJECT_ID(p.Obj) IS NOT NULL
@@ -564,6 +577,8 @@ IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 CREATE TABLE #Expected (SourceTable nvarchar(128) NOT NULL PRIMARY KEY, NbRows int NOT NULL);
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 CREATE TABLE #StatusMap (StatusTrain int NOT NULL PRIMARY KEY, StatusCode varchar(20) NOT NULL);
+IF OBJECT_ID(N'tempdb..#Config') IS NOT NULL DROP TABLE #Config;
+CREATE TABLE #Config (OrphanPolicy varchar(10) NOT NULL);
 IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
 CREATE TABLE #MetricKey (JsonKey nvarchar(50) COLLATE Latin1_General_CS_AS NOT NULL PRIMARY KEY, MetricCode varchar(30) NOT NULL);
 
@@ -571,6 +586,7 @@ CREATE TABLE #MetricKey (JsonKey nvarchar(50) COLLATE Latin1_General_CS_AS NOT N
 foreach ($k in ($TrainStatusMap.Keys | Sort-Object { [int]$_ })) {
     [void]$sb.Append(("INSERT INTO #StatusMap (StatusTrain, StatusCode) VALUES ({0}, '{1}');" -f [int]$k, ([string]$TrainStatusMap[$k]).Replace("'", "''")) + $nl)
 }
+[void]$sb.Append(("INSERT INTO #Config (OrphanPolicy) VALUES ('{0}');" -f $OrphanPolicy.ToUpperInvariant()) + $nl)
 foreach ($k in $MetricKeys.Keys) {
     [void]$sb.Append(("INSERT INTO #MetricKey (JsonKey, MetricCode) VALUES (N'{0}', '{1}');" -f $k, $MetricKeys[$k]) + $nl)
 }
@@ -616,6 +632,7 @@ SET XACT_ABORT ON;
 DECLARE @Step nvarchar(200) = N'Contrôle du chargement';
 DECLARE @Msg nvarchar(2000);  -- RAISERROR n'accepte pas de paramètre nvarchar(max)
 DECLARE @n int;
+DECLARE @OrphanPolicy varchar(10) = ISNULL((SELECT TOP (1) OrphanPolicy FROM #Config), 'REJECT');
 
 BEGIN TRY
     -- -----------------------------------------------------------------
@@ -782,14 +799,14 @@ BEGIN TRY
         DateUpdateProperty datetime2(7), DateUpdate datetime2(7)) j
     WHERE s.SourceTable = N'DocumentProperty';
 
-    SELECT s.Seq, s.SourceTable,
+    SELECT s.Seq, s.SourceTable, j.IdAssociation AS LegacyId,
            COALESCE(j.IdClass, j.IdDocumentClass, j.IdField, j.IdDocumentField, j.IdProperty, j.IdDocumentProperty) AS LegacyItemId,
            j.IdModel AS LegacyModelId, j.IdModelVersion AS LegacyVersionRef,
            CAST(NULL AS int) AS ProjectVersionId, CAST(NULL AS int) AS ItemId   -- calculés plus bas
     INTO #DocAssoc
     FROM #Src s
     CROSS APPLY OPENJSON(s.RowJson) WITH (
-        IdClass bigint, IdDocumentClass bigint, IdField bigint, IdDocumentField bigint,
+        IdAssociation bigint, IdClass bigint, IdDocumentClass bigint, IdField bigint, IdDocumentField bigint,
         IdProperty bigint, IdDocumentProperty bigint, IdModel bigint, IdModelVersion bigint) j
     WHERE s.SourceTable IN (N'DocumentClassProjects', N'DocumentFieldProjects', N'DocumentPropertyProjects');
 
@@ -822,7 +839,8 @@ BEGIN TRY
         SELECT SourceTable, Seq, LegacyId FROM #DocClass  UNION ALL
         SELECT SourceTable, Seq, LegacyId FROM #DocField  UNION ALL
         SELECT SourceTable, Seq, LegacyId FROM #DocProperty UNION ALL
-        SELECT SourceTable, Seq, LegacyId FROM #DocRequest
+        SELECT SourceTable, Seq, LegacyId FROM #DocRequest UNION ALL
+        SELECT SourceTable, Seq, LegacyId FROM #DocAssoc
     )
     SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' #', Seq)), N', ') FROM AllIds WHERE LegacyId IS NULL;
     IF @Msg IS NOT NULL RAISERROR (N'Identifiant source introuvable (nom de colonne inattendu ?) : %s', 16, 1, @Msg);
@@ -836,7 +854,8 @@ BEGIN TRY
         SELECT SourceTable, LegacyId FROM #DocClass  UNION ALL
         SELECT SourceTable, LegacyId FROM #DocField  UNION ALL
         SELECT SourceTable, LegacyId FROM #DocProperty UNION ALL
-        SELECT SourceTable, LegacyId FROM #DocRequest
+        SELECT SourceTable, LegacyId FROM #DocRequest UNION ALL
+        SELECT SourceTable, LegacyId FROM #DocAssoc
     )
     SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId)), N', ')
     FROM (SELECT SourceTable, LegacyId FROM AllIds GROUP BY SourceTable, LegacyId HAVING COUNT(*) > 1) d;
@@ -883,6 +902,10 @@ BEGIN TRY
     -- -----------------------------------------------------------------
     BEGIN TRANSACTION;
 
+    -- Les rejets sont recalculés à chaque exécution pour les tables présentes dans l'export
+    SET @Step = N'Réinitialisation des rejets';
+    DELETE r FROM dbo.Migration_Rejected r WHERE r.SourceTable IN (SELECT DISTINCT SourceTable FROM #Src);
+
     -- Les triggers d'historique d'insertion sont suspendus : chaque projet / version migré
     -- créerait sinon une entrée « a été créé(e) » datée du jour de la migration.
     -- Réactivés avant le COMMIT ; en cas d'erreur, le ROLLBACK annule aussi leur désactivation.
@@ -920,9 +943,17 @@ BEGIN TRY
     FROM #Version v
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'Model' AND mp.SourceId = v.LegacyModelId;
 
-    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (IdModel ', LegacyModelId, N')')), N', ')
-    FROM #Version WHERE ProjectId IS NULL;
-    IF @Msg IS NOT NULL RAISERROR (N'Versions dont le modèle est introuvable : %s', 16, 1, @Msg);
+    -- Orphelins (parent introuvable) : bloquants avec -OrphanPolicy Fail ; sinon écartés et
+    -- conservés dans dbo.Migration_Rejected avec la raison et la ligne JSON d'origine.
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (IdModel ', LegacyModelId, N')')), N', ') FROM #Version WHERE ProjectId IS NULL;
+    IF @Msg IS NOT NULL AND @OrphanPolicy = 'FAIL' RAISERROR (N'Versions dont le modèle est introuvable : %s', 16, 1, @Msg);
+    INSERT INTO dbo.Migration_Rejected (SourceTable, SourceId, Reason, RowJson)
+    SELECT x.SourceTable, x.LegacyId, LEFT(CONCAT(N'Modèle introuvable (IdModel ', x.LegacyModelId, N')'), 400), s.RowJson
+    FROM #Version x JOIN #Src s ON s.Seq = x.Seq
+    WHERE x.ProjectId IS NULL;
+    SET @n = @@ROWCOUNT;
+    IF @n > 0 PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) — Versions dont le modèle est introuvable (voir dbo.Migration_Rejected)');
+    DELETE FROM #Version WHERE ProjectId IS NULL;
 
     SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(N'IdModel ', v.LegacyModelId, N' VersionNb ', v.VersionNb)), N', ')
     FROM #Version v
@@ -974,9 +1005,17 @@ BEGIN TRY
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = t.VersionTable AND mp.SourceId = t.LegacyVersionId
     JOIN dbo.Project_Version pv ON pv.Id = mp.TargetId;
 
-    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (version ', LegacyVersionId, N')')), N', ')
-    FROM #Test WHERE ProjectId IS NULL;
-    IF @Msg IS NOT NULL RAISERROR (N'Tests dont la version est introuvable : %s', 16, 1, @Msg);
+    -- Orphelins (parent introuvable) : bloquants avec -OrphanPolicy Fail ; sinon écartés et
+    -- conservés dans dbo.Migration_Rejected avec la raison et la ligne JSON d'origine.
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (version ', LegacyVersionId, N')')), N', ') FROM #Test WHERE ProjectId IS NULL;
+    IF @Msg IS NOT NULL AND @OrphanPolicy = 'FAIL' RAISERROR (N'Tests dont la version est introuvable : %s', 16, 1, @Msg);
+    INSERT INTO dbo.Migration_Rejected (SourceTable, SourceId, Reason, RowJson)
+    SELECT x.SourceTable, x.LegacyId, LEFT(CONCAT(N'Version introuvable (', x.VersionTable, N' Id ', x.LegacyVersionId, N')'), 400), s.RowJson
+    FROM #Test x JOIN #Src s ON s.Seq = x.Seq
+    WHERE x.ProjectId IS NULL;
+    SET @n = @@ROWCOUNT;
+    IF @n > 0 PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) — Tests dont la version est introuvable (voir dbo.Migration_Rejected)');
+    DELETE FROM #Test WHERE ProjectId IS NULL;
 
     SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId)), N', ')
     FROM #Test WHERE TestDataPath IS NULL OR LTRIM(RTRIM(TestDataPath)) = N'';
@@ -1018,9 +1057,17 @@ BEGIN TRY
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'Model' AND mp.SourceId = r.LegacyModelId;
     UPDATE r SET StatusCode = sm.StatusCode FROM #Train r JOIN #StatusMap sm ON sm.StatusTrain = r.StatusTrain;
 
-    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (IdModel ', LegacyModelId, N')')), N', ')
-    FROM #Train WHERE ProjectId IS NULL;
-    IF @Msg IS NOT NULL RAISERROR (N'Entraînements dont le modèle est introuvable : %s', 16, 1, @Msg);
+    -- Orphelins (parent introuvable) : bloquants avec -OrphanPolicy Fail ; sinon écartés et
+    -- conservés dans dbo.Migration_Rejected avec la raison et la ligne JSON d'origine.
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (IdModel ', LegacyModelId, N')')), N', ') FROM #Train WHERE ProjectId IS NULL;
+    IF @Msg IS NOT NULL AND @OrphanPolicy = 'FAIL' RAISERROR (N'Entraînements dont le modèle est introuvable : %s', 16, 1, @Msg);
+    INSERT INTO dbo.Migration_Rejected (SourceTable, SourceId, Reason, RowJson)
+    SELECT x.SourceTable, x.LegacyId, LEFT(CONCAT(N'Modèle introuvable (IdModel ', x.LegacyModelId, N')'), 400), s.RowJson
+    FROM #Train x JOIN #Src s ON s.Seq = x.Seq
+    WHERE x.ProjectId IS NULL;
+    SET @n = @@ROWCOUNT;
+    IF @n > 0 PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) — Entraînements dont le modèle est introuvable (voir dbo.Migration_Rejected)');
+    DELETE FROM #Train WHERE ProjectId IS NULL;
 
     SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' Id ', LegacyId, N' (StatusTrain ', ISNULL(CONVERT(nvarchar(20), StatusTrain), N'NULL'), N')')), N', ')
     FROM #Train WHERE StatusCode IS NULL;
@@ -1111,9 +1158,19 @@ BEGIN TRY
     UPDATE f SET DocumentClassId = mp.TargetId
     FROM #DocField f
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'DocumentClass' AND mp.SourceId = f.LegacyClassId;
-    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(N'IdField ', LegacyId, N' (IdClass ', LegacyClassId, N')')), N', ')
-    FROM #DocField WHERE DocumentClassId IS NULL OR Name IS NULL;
-    IF @Msg IS NOT NULL RAISERROR (N'Champs sans classe connue ou sans nom : %s', 16, 1, @Msg);
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(N'IdField ', LegacyId)), N', ') FROM #DocField WHERE Name IS NULL;
+    IF @Msg IS NOT NULL RAISERROR (N'Champs sans nom : %s', 16, 1, @Msg);
+    -- Orphelins (parent introuvable) : bloquants avec -OrphanPolicy Fail ; sinon écartés et
+    -- conservés dans dbo.Migration_Rejected avec la raison et la ligne JSON d'origine.
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(N'IdField ', LegacyId, N' (IdClass ', LegacyClassId, N')')), N', ') FROM #DocField WHERE DocumentClassId IS NULL;
+    IF @Msg IS NOT NULL AND @OrphanPolicy = 'FAIL' RAISERROR (N'Champs dont la classe est introuvable : %s', 16, 1, @Msg);
+    INSERT INTO dbo.Migration_Rejected (SourceTable, SourceId, Reason, RowJson)
+    SELECT x.SourceTable, x.LegacyId, LEFT(CONCAT(N'Classe introuvable (IdClass ', x.LegacyClassId, N')'), 400), s.RowJson
+    FROM #DocField x JOIN #Src s ON s.Seq = x.Seq
+    WHERE x.DocumentClassId IS NULL;
+    SET @n = @@ROWCOUNT;
+    IF @n > 0 PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) — Champs dont la classe est introuvable (voir dbo.Migration_Rejected)');
+    DELETE FROM #DocField WHERE DocumentClassId IS NULL;
 
     INSERT INTO dbo.Document_Field (DocumentClassId, Name, Description, CreatedBy, CreatedAt, UpdatedBy, UpdatedAt)
     SELECT s.DocumentClassId, s.Name, s.Description, COALESCE(wc.Resolved, N'MIGRATION'), COALESCE(s.DateCreate, SYSDATETIME()), wu.Resolved, s.DateUpdate
@@ -1171,9 +1228,22 @@ BEGIN TRY
      AND mp.SourceTable = CASE a.SourceTable WHEN N'DocumentClassProjects' THEN N'DocumentClass'
                                              WHEN N'DocumentFieldProjects' THEN N'DocumentField'
                                              ELSE N'DocumentProperty' END;
-    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' #', Seq, N' (IdModel ', LegacyModelId, N', IdModelVersion ', LegacyVersionRef, N', élément ', LegacyItemId, N')')), N', ')
-    FROM #DocAssoc WHERE ProjectVersionId IS NULL OR ItemId IS NULL;
-    IF @Msg IS NOT NULL RAISERROR (N'Associations dont la version ou l''élément est introuvable : %s', 16, 1, @Msg);
+    -- Orphelins (parent introuvable) : bloquants avec -OrphanPolicy Fail ; sinon écartés et
+    -- conservés dans dbo.Migration_Rejected avec la raison et la ligne JSON d'origine.
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(SourceTable, N' IdAssociation ', LegacyId, N' (IdModel ', LegacyModelId, N', IdModelVersion ', LegacyVersionRef, N', élément ', LegacyItemId, N')')), N', ') FROM #DocAssoc WHERE ProjectVersionId IS NULL OR ItemId IS NULL;
+    IF @Msg IS NOT NULL AND @OrphanPolicy = 'FAIL' RAISERROR (N'Associations dont la version ou l''élément est introuvable : %s', 16, 1, @Msg);
+    INSERT INTO dbo.Migration_Rejected (SourceTable, SourceId, Reason, RowJson)
+    SELECT x.SourceTable, x.LegacyId, LEFT(CASE
+        WHEN NOT EXISTS (SELECT 1 FROM dbo.Migration_LegacyMap mm WHERE mm.SourceTable = N'Model' AND mm.SourceId = x.LegacyModelId)
+            THEN CONCAT(N'Modèle introuvable (IdModel ', x.LegacyModelId, N')')
+        WHEN x.ProjectVersionId IS NULL
+            THEN CONCAT(N'Version introuvable (IdModel ', x.LegacyModelId, N', IdModelVersion ', x.LegacyVersionRef, N')')
+        ELSE CONCAT(N'Élément introuvable (Id ', x.LegacyItemId, N')') END, 400), s.RowJson
+    FROM #DocAssoc x JOIN #Src s ON s.Seq = x.Seq
+    WHERE (x.ProjectVersionId IS NULL OR x.ItemId IS NULL);
+    SET @n = @@ROWCOUNT;
+    IF @n > 0 PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) — Associations dont la version ou l''élément est introuvable (voir dbo.Migration_Rejected)');
+    DELETE FROM #DocAssoc WHERE ProjectVersionId IS NULL OR ItemId IS NULL;
 
     INSERT INTO dbo.Project_Version_Document_Class (ProjectVersionId, DocumentClassId)
     SELECT DISTINCT a.ProjectVersionId, a.ItemId FROM #DocAssoc a
@@ -1220,8 +1290,11 @@ BEGIN TRY
         IF OBJECT_ID(N'dbo.trg_ProjectVersion_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project_Version ENABLE TRIGGER trg_ProjectVersion_Insert;
     END
 
+    SELECT @n = COUNT(*) FROM dbo.Migration_Rejected WHERE SourceTable IN (SELECT DISTINCT SourceTable FROM #Src);
     COMMIT TRANSACTION;
     PRINT N'=== MIGRATION TERMINÉE : transaction validée ===';
+    IF @n > 0
+        PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) (parent introuvable), non migrées. Détail : SELECT SourceTable, SourceId, Reason, RowJson FROM dbo.Migration_Rejected ORDER BY SourceTable, SourceId;');
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
@@ -1234,6 +1307,7 @@ IF OBJECT_ID(N'tempdb..#Src') IS NOT NULL DROP TABLE #Src;
 IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
+IF OBJECT_ID(N'tempdb..#Config') IS NOT NULL DROP TABLE #Config;
 IF OBJECT_ID(N'tempdb..#Family') IS NOT NULL DROP TABLE #Family;
 IF OBJECT_ID(N'tempdb..#Model') IS NOT NULL DROP TABLE #Model;
 IF OBJECT_ID(N'tempdb..#Version') IS NOT NULL DROP TABLE #Version;

@@ -14,6 +14,8 @@ base déjà livrée.
      inférences, référentiel documentaire, demandes)
    - `19_Migration_LegacyMap` — correspondance ancien Id → nouvel Id de la reprise
      des données (`4_migration_ml`)
+   - `20_Migration_Rejected` — lignes écartées par la reprise des données (parent
+     introuvable), avec la raison et le JSON d'origine
 2. **`2_procedures/`** — triggers et procédures de l'application. Exécutés
    après toutes les tables, car ils écrivent dans `Project_History` et lisent `User`.
 3. **`3_init/`** — données d'initialisation (équipes H620, H600, H500).

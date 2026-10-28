@@ -26,13 +26,14 @@ fonctionne aussi.
 ### Droits nécessaires
 
 Les scripts `1_tables` doivent avoir été déployés au préalable par un compte ayant
-les droits DDL, y compris `19_Migration_LegacyMap.sql`. Le script de migration ne
+les droits DDL, y compris `19_Migration_LegacyMap.sql` et `20_Migration_Rejected.sql`. Le script de migration ne
 crée ensuite **aucun objet permanent** : il utilise uniquement des tables
 temporaires `#`. Il lui faut :
 
 | Droit | Objets | Si absent |
 |---|---|---|
 | `SELECT` + `INSERT` | les 14 tables cibles et `dbo.Migration_LegacyMap` | arrêt avant toute écriture, avec la liste des droits manquants |
+| `SELECT` + `INSERT` + `DELETE` | `dbo.Migration_Rejected` | arrêt avant toute écriture |
 | `SELECT` | `dbo.[User]`, `dbo.Ref_TaskType` | arrêt avant toute écriture |
 | `ALTER` *(facultatif)* | `dbo.Project`, `dbo.Project_Version` | la migration a lieu quand même, mais les triggers d'historique restent actifs : chaque projet / version migré apparaît dans `Project_History` (« a été créé ») |
 
@@ -67,6 +68,7 @@ Prérequis vérifiés au même moment :
 | `-InputFile` | Export texte de l'ancienne base (format ci-dessous) |
 | `-OutputFile` | Script SQL généré (défaut : `<InputFile>_migration.sql`) |
 | `-Strict` | Aucun script généré si une table migrée présente un écart (recommandé en production) |
+| `-OrphanPolicy` | Lignes dont le parent est introuvable : `Reject` (défaut) = écartées et conservées dans `dbo.Migration_Rejected`, le reste est migré ; `Fail` = migration annulée |
 | `-TrainStatusMap` | `StatusTrain` → `Ref_RunStatus`. Défaut `@{0='RUNNING';1='SUCCEEDED';2='FAILED'}` |
 | `-InputEncoding` | `Auto` (défaut : UTF-8 si valide, sinon Windows-1252), `UTF8`, `Windows1252`, `Unicode` |
 | `-RowsPerBatch` | Nombre d'INSERT par batch `GO` dans le script généré (défaut 200) |
@@ -154,16 +156,53 @@ est remplacé par le `PersoId` quand l'utilisateur existe dans `[User]`. Sinon, 
 valeur source est conservée. Si l'auteur est absent alors que la colonne est
 obligatoire, on écrit `MIGRATION`.
 
+### Lignes orphelines (parent introuvable)
+
+L'ancienne base n'avait pas de clés étrangères : une ligne peut désigner un parent
+qui n'existe pas (ou plus). Voici les cas pris en charge :
+
+| Ligne | Parent introuvable |
+|---|---|
+| `Model*_Version` | modèle (`IdModel`) |
+| `Model*_Version_Test` | version testée (y compris une version elle-même rejetée) |
+| `*TrainTrack` | modèle |
+| `DocumentField` | classe |
+| `Document*Projects` | modèle, version (`IdModelVersion`) ou élément (classe / champ / propriété) |
+
+Avec `-OrphanPolicy Reject` (défaut), ces lignes ne sont pas migrées. Elles sont
+enregistrées dans `dbo.Migration_Rejected`, avec la raison du rejet et la ligne JSON
+d'origine, et le reste est migré. Un message `ATTENTION` indique le nombre de lignes
+rejetées à chaque étape, puis le total à la fin.
+
+```sql
+SELECT SourceTable, SourceId, Reason, RowJson
+FROM dbo.Migration_Rejected
+ORDER BY SourceTable, SourceId;
+```
+
+Le contenu de cette table est recalculé à chaque exécution, pour les tables présentes
+dans l'export. Si le parent apparaît dans un export ultérieur (modèle ajouté, export
+complété), la ligne est alors migrée et disparaît des rejets.
+
+Avec `-OrphanPolicy Fail`, le premier orphelin annule toute la migration.
+
+Le `IdModelVersion` des tables `Document*Projects` est interprété de deux façons,
+dans cet ordre :
+1. comme l'identifiant d'une version (tables `Model*_Version`) rattachée au même `IdModel` ;
+2. à défaut, comme un numéro de version de ce modèle.
+
+La ligne n'est rejetée que si aucune des deux lectures ne trouve de version.
+
 ### Erreurs bloquantes (rollback complet)
 
 - Une ligne dont l'identifiant source est introuvable : nom de colonne inattendu.
 - Un identifiant source en double.
 - Un modèle dont le type de tâche n'est pas reconnu.
-- Une version, un test ou un entraînement dont le parent est introuvable.
+- Une version, un test, un entraînement, un champ ou une association dont le parent
+  est introuvable, **uniquement avec `-OrphanPolicy Fail`**.
 - Un numéro de version en double pour un même modèle.
 - Un test sans `TestDataPath`.
 - Un `StatusTrain` absent de `-TrainStatusMap`.
-- Une association dont la version ou l'élément est introuvable.
 - Une valeur trop longue ou invalide pour la colonne cible.
 
 ## Ajouter une colonne ou une métrique
