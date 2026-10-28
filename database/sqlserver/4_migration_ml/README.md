@@ -46,6 +46,11 @@ Prérequis vérifiés au même moment :
 
 ### Comportement dans SSMS
 
+- **Exécuter le script EN ENTIER** (F5 sans sélection). Si seule une partie est
+  sélectionnée, le batch de migration le détecte et s'arrête sans rien écrire
+  (« Tables de chargement absentes »). Il revérifie aussi la présence de chaque table
+  nécessaire et indique le script `1_tables` à déployer en cas d'absence, par exemple
+  « dbo.Migration_Rejected (1_tables/20_Migration_Rejected.sql) ».
 - **Arrêt avant écriture.** Dans SSMS, une erreur n'arrête pas les batches suivants.
   Si le contrôle préalable échoue, le script passe donc en `SET NOEXEC ON` : plus rien
   n'est exécuté. Le dernier batch remet `SET NOEXEC OFF` pour que la fenêtre reste

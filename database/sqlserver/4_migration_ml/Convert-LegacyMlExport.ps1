@@ -524,15 +524,41 @@ IF (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID()) <
                        N'    (Les erreurs « Incorrect syntax » affichées ensuite en découlent : SQL Server analyse', @nl,
                        N'     les batches suivants sans les exécuter. Aucune donnée n''est écrite.)', @nl);
 
--- Schéma cible (scripts 1_tables)
-IF COL_LENGTH(N'dbo.Project', N'Category') IS NULL
-   OR COL_LENGTH(N'dbo.Training_Run', N'ProjectId') IS NULL
-   OR COL_LENGTH(N'dbo.Evaluation', N'IsItc') IS NULL
-   OR OBJECT_ID(N'dbo.Inference_Request', N'U') IS NULL
-   OR OBJECT_ID(N'dbo.Document_Request', N'U') IS NULL
-   OR OBJECT_ID(N'dbo.Migration_LegacyMap', N'U') IS NULL
-   OR OBJECT_ID(N'dbo.Migration_Rejected', N'U') IS NULL
-    SET @Err += N'  - Schéma cible incomplet (ou mauvaise base sélectionnée) : déployer d''abord les scripts 1_tables, dont 19_Migration_LegacyMap et 20_Migration_Rejected.' + @nl;
+-- Schéma cible : chaque table / colonne nécessaire, avec le script 1_tables qui la crée.
+-- (#Required est aussi relue par le batch de migration, qui revérifie avant d'écrire.)
+IF OBJECT_ID(N'tempdb..#Required') IS NOT NULL DROP TABLE #Required;
+CREATE TABLE #Required (Obj nvarchar(256) NOT NULL, Col sysname NULL, Script nvarchar(100) NOT NULL);
+INSERT INTO #Required (Obj, Col, Script) VALUES
+    (N'dbo.Ref_TaskType', NULL, N'00_Ref_TaskType.sql'),
+    (N'dbo.Ref_RunStatus', NULL, N'00_Ref_RunStatus.sql'),
+    (N'dbo.Ref_Metric', NULL, N'00_Ref_Metric.sql'),
+    (N'dbo.Project', N'Category', N'03_Project.sql'),
+    (N'dbo.Project', N'AssociatedSolutionId', N'03_Project.sql'),
+    (N'dbo.Project_Version', N'IsItc', N'05_Project_Version.sql'),
+    (N'dbo.Evaluation', N'IsItc', N'07_Evaluation.sql'),
+    (N'dbo.Project_Version_Metric', NULL, N'08_Project_Version_Metric.sql'),
+    (N'dbo.Evaluation_Metric', NULL, N'09_Evaluation_Metric.sql'),
+    (N'dbo.Training_Run', N'ProjectId', N'10_Training_Run.sql'),
+    (N'dbo.Inference_Request', NULL, N'11_Inference_Request.sql'),
+    (N'dbo.Document_Class', NULL, N'12_Document_Class.sql'),
+    (N'dbo.Document_Field', NULL, N'13_Document_Field.sql'),
+    (N'dbo.Document_Property', NULL, N'14_Document_Property.sql'),
+    (N'dbo.Project_Version_Document_Class', NULL, N'15_Project_Version_Document_Class.sql'),
+    (N'dbo.Project_Version_Document_Field', NULL, N'16_Project_Version_Document_Field.sql'),
+    (N'dbo.Project_Version_Document_Property', NULL, N'17_Project_Version_Document_Property.sql'),
+    (N'dbo.Document_Request', NULL, N'18_Document_Request.sql'),
+    (N'dbo.Migration_LegacyMap', NULL, N'19_Migration_LegacyMap.sql'),
+    (N'dbo.Migration_Rejected', NULL, N'20_Migration_Rejected.sql');
+
+SELECT @Err += CONCAT(N'  - ', r.Obj, CASE WHEN r.Col IS NOT NULL THEN CONCAT(N' (colonne ', r.Col, N')') END,
+                      N' absente : déployer 1_tables/', r.Script, @nl)
+FROM #Required r
+WHERE OBJECT_ID(r.Obj, N'U') IS NULL OR (r.Col IS NOT NULL AND COL_LENGTH(r.Obj, r.Col) IS NULL);
+IF COL_LENGTH(N'dbo.Evaluation', N'Id') IS NOT NULL
+   AND (SELECT TYPE_NAME(system_type_id) FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.Evaluation') AND name = N'Id') <> N'uniqueidentifier'
+    SET @Err += N'  - dbo.Evaluation.Id n''est pas un uniqueidentifier : déployer 1_tables/07_Evaluation.sql et 09_Evaluation_Metric.sql' + @nl;
+IF OBJECT_ID(N'dbo.Project', N'U') IS NULL
+    SET @Err += N'    (dbo.Project absente : vérifier la base sélectionnée dans SSMS.)' + @nl;
 
 -- Droits
 SELECT @Err += CONCAT(N'  - Droit ', p.Perm, N' manquant sur ', p.Obj, @nl)
@@ -632,11 +658,26 @@ SET XACT_ABORT ON;
 DECLARE @Step nvarchar(200) = N'Contrôle du chargement';
 DECLARE @Msg nvarchar(2000);  -- RAISERROR n'accepte pas de paramètre nvarchar(max)
 DECLARE @n int;
-DECLARE @OrphanPolicy varchar(10) = ISNULL((SELECT TOP (1) OrphanPolicy FROM #Config), 'REJECT');
+DECLARE @OrphanPolicy varchar(10);
 
 BEGIN TRY
     -- -----------------------------------------------------------------
     -- 0. Contrôles avant écriture
+    -- -----------------------------------------------------------------
+    -- Revérification des prérequis : protège aussi une exécution partielle du script
+    -- (sélection exécutée dans SSMS sans le contrôle préalable ni le chargement).
+    SET @Step = N'Contrôle des prérequis';
+    IF OBJECT_ID(N'tempdb..#Required') IS NULL OR OBJECT_ID(N'tempdb..#Src') IS NULL
+       OR OBJECT_ID(N'tempdb..#Expected') IS NULL OR OBJECT_ID(N'tempdb..#Config') IS NULL
+       OR OBJECT_ID(N'tempdb..#StatusMap') IS NULL OR OBJECT_ID(N'tempdb..#MetricKey') IS NULL
+        RAISERROR (N'Tables de chargement absentes : exécuter le script EN ENTIER (F5 sans sélection), dans une seule fenêtre.', 16, 1);
+    SELECT @Msg = STRING_AGG(CONVERT(nvarchar(max), CONCAT(r.Obj, CASE WHEN r.Col IS NOT NULL THEN CONCAT(N'.', r.Col) END, N' (1_tables/', r.Script, N')')), N', ')
+    FROM #Required r
+    WHERE OBJECT_ID(r.Obj, N'U') IS NULL OR (r.Col IS NOT NULL AND COL_LENGTH(r.Obj, r.Col) IS NULL);
+    IF @Msg IS NOT NULL RAISERROR (N'Objets absents de la base, à déployer d''abord : %s', 16, 1, @Msg);
+    SET @OrphanPolicy = ISNULL((SELECT TOP (1) OrphanPolicy FROM #Config), 'REJECT');
+
+    SET @Step = N'Contrôle du chargement';
     -- -----------------------------------------------------------------
     -- Toutes les lignes générées ont-elles été chargées ?
     SELECT @Msg = STRING_AGG(CONCAT(e.SourceTable, N' (attendu ', e.NbRows, N', chargé ', ISNULL(c.NbRows, 0), N')'), N', ')
@@ -1308,6 +1349,7 @@ IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
 IF OBJECT_ID(N'tempdb..#Config') IS NOT NULL DROP TABLE #Config;
+IF OBJECT_ID(N'tempdb..#Required') IS NOT NULL DROP TABLE #Required;
 IF OBJECT_ID(N'tempdb..#Family') IS NOT NULL DROP TABLE #Family;
 IF OBJECT_ID(N'tempdb..#Model') IS NOT NULL DROP TABLE #Model;
 IF OBJECT_ID(N'tempdb..#Version') IS NOT NULL DROP TABLE #Version;
