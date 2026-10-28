@@ -6,6 +6,9 @@ Reprise ponctuelle des données de l'ancienne base (28 tables `Model*`,
 ## Utilisation
 
 ```powershell
+# 0. Export de l'ancienne base : exécuter Export-LegacyMlDatabase.sql sur l'ANCIENNE
+#    base et enregistrer l'onglet Messages dans export_ancienne_base.txt
+
 # 1. Contrôle de l'export et génération du script SQL
 .\Convert-LegacyMlExport.ps1 -InputFile .\export_ancienne_base.txt -Strict
 
@@ -91,6 +94,22 @@ Nombre de lignes : 66
 ```
 
 - Le préfixe ODBC est retiré.
+- Export produit par `Export-LegacyMlDatabase.sql` : chaque ligne de JSON commence
+  par `|` (retiré à la lecture, la ligne `Format : JSON préfixé par |` en tête du
+  fichier l'annonce). Les anciens exports sans `|` restent lus.
+
+### Export de l'ancienne base (`Export-LegacyMlDatabase.sql`)
+
+Corrige la requête d'export d'origine, qui donnait « aucune ligne » pour des tables
+non vides :
+
+| Cause | Correctif |
+|---|---|
+| Le client ODBC n'affiche pas un message `PRINT` court qui commence par `[` (il le prend pour son préfixe `[Microsoft][ODBC...]`) : le JSON d'une petite table, imprimé en un seul `PRINT`, disparaissait | Chaque morceau est préfixé par `\|` |
+| Le client ODBC coupe chaque message à 1024 caractères, préfixe compris : la fin des morceaux de 4000 caractères était perdue | Morceaux de 900 caractères |
+| `@pos` déclaré dans la boucle (`DECLARE @pos INT = 1`) : la variable n'est pas remise à 1 d'une table à l'autre, et après une grosse table rien n'était imprimé | `@pos` remis à 1 pour chaque table |
+| `FOR JSON` échoue sur `geography`, `geometry`, `hierarchyid` et l'erreur arrêtait l'export | Conversion en texte (aussi `xml`, `sql_variant`, `text`, `ntext`, `image`) ; `TRY/CATCH` par table |
+| Tables hors `dbo` | Nom qualifié par le schéma |
 - `Table vide : []` = table vide.
 - **Sauts de ligne au milieu du JSON :** le JSON d'une table va de
   `--- Résultat JSON :` jusqu'à la section `--- Table :` suivante. Toutes ses lignes

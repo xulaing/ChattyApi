@@ -11,6 +11,9 @@
         --- Résultat JSON :
         [Microsoft][ODBC Driver 13 for SQL Server][SQL Server][{"IdModel":2,...},...]
 
+    ou, produit par Export-LegacyMlDatabase.sql, chaque ligne de JSON préfixée par | :
+        |[{"IdModel":2,...},...
+
     Pour chaque table, le script :
       1. reconstitue le JSON (l'export le coupe en lignes de ~2000 caractères, parfois
          au milieu d'un mot : les lignes sont recollées sans séparateur) ;
@@ -303,6 +306,9 @@ $lines = $text -split "`r`n|`n|`r"
 # à la ligne parasites, lignes vides intercalées) : toutes les lignes sont recollées
 # SANS séparateur. Une ligne vide est ignorée, sauf au milieu d'une chaîne JSON où
 # ses espaces font partie de la valeur.
+# Export produit par Export-LegacyMlDatabase.sql : chaque ligne de JSON est préfixée
+# par | (un message PRINT commençant par [ est masqué par le client ODBC).
+$pipePrefixed = [bool]($lines | Where-Object { $_ -match '^\s*Format\s*:\s*JSON pr.{1,3}fix.{1,3} par \|' } | Select-Object -First 1)
 $tables = New-Object System.Collections.Generic.List[object]
 $current = $null
 $inJson = $false
@@ -319,6 +325,7 @@ foreach ($line in $lines) {
     if ($null -eq $current) { continue }
     if ($inJson) {
         if ($line.Trim().Length -eq 0 -and -not $current.InString) { continue }
+        if ($pipePrefixed -and $line.StartsWith('|')) { $line = $line.Substring(1) }
         [void]$current.Json.Append($line)
         $current.JsonLines++
         Update-JsonStringState $current $line
