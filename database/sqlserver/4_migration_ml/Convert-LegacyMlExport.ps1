@@ -341,6 +341,9 @@ if ($tables.Count -eq 0) { throw "Aucune section '--- Table :' trouvée dans $In
 # Contrôle et préparation de chaque table
 # ---------------------------------------------------------------------------
 $report = New-Object System.Collections.Generic.List[object]
+# Lignes des tables migrées qui ne peuvent pas être insérées car illisibles dans
+# l'export : listées en fin du script SQL généré
+$unreadable = New-Object System.Collections.Generic.List[object]
 $rowsToLoad = New-Object System.Collections.Generic.List[object]
 $problems = 0
 
@@ -360,7 +363,11 @@ foreach ($t in $tables) {
     foreach ($el in $split.Elements) {
         $obj = $null
         try { $obj = ConvertFrom-Json -InputObject $el } catch { $obj = $null }
-        if ($null -eq $obj -or -not ($obj -is [System.Management.Automation.PSCustomObject])) { $invalid++; continue }
+        if ($null -eq $obj -or -not ($obj -is [System.Management.Automation.PSCustomObject])) {
+            $invalid++
+            if ($MigratedTables -contains $t.Name) { $unreadable.Add([pscustomobject]@{ Table = $t.Name; Text = 'fragment JSON invalide'; Json = $el }) }
+            continue
+        }
         # Colonnes présentes avec une valeur (noms sensibles à la casse)
         $present = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
         foreach ($p in $obj.PSObject.Properties) {
@@ -413,6 +420,11 @@ foreach ($t in $tables) {
         Write-Host ("STRUCTURE {0}  : {1} ligne(s) sans [{2}]" -f $t.Name, $missing[$group], $group) -ForegroundColor Red
     }
 
+    if ($MigratedTables -contains $t.Name) {
+        foreach ($e in $split.Errors) { $unreadable.Add([pscustomobject]@{ Table = $t.Name; Text = "JSON illisible : $e"; Json = $null }) }
+        $lost = $(if ($null -ne $declared) { $declared - $jsonCount } else { 0 })
+        if ($lost -gt 0) { $unreadable.Add([pscustomobject]@{ Table = $t.Name; Text = "$lost ligne(s) annoncée(s) absente(s) du JSON (export tronqué ?)"; Json = $null }) }
+    }
     $staged = 0
     if ($MigratedTables -contains $t.Name) {
         foreach ($el in $valid) { $rowsToLoad.Add([pscustomobject]@{ Table = $t.Name; Json = $el }) }
@@ -1342,7 +1354,36 @@ BEGIN TRY
     COMMIT TRANSACTION;
     PRINT N'=== MIGRATION TERMINÉE : transaction validée ===';
     IF @n > 0
-        PRINT CONCAT(N'ATTENTION : ', @n, N' ligne(s) rejetée(s) (parent introuvable), non migrées. Détail : SELECT SourceTable, SourceId, Reason, RowJson FROM dbo.Migration_Rejected ORDER BY SourceTable, SourceId;');
+    BEGIN
+        -- Liste des lignes non insérées : table, Id d'origine, raison, puis la ligne JSON
+        -- d'origine en morceaux de 900 caractères (le client ODBC coupe les messages à
+        -- 1024 caractères et masque ceux qui commencent par « [ » : préfixe « | »).
+        PRINT N'';
+        PRINT CONCAT(N'=== LIGNES NON INSÉRÉES : ', @n, N' (parent introuvable) — conservées dans dbo.Migration_Rejected ===');
+        DECLARE @rTable nvarchar(128), @rId bigint, @rReason nvarchar(400), @rJson nvarchar(max), @rPos int;
+        DECLARE rejected_cursor CURSOR LOCAL FAST_FORWARD FOR
+            SELECT SourceTable, SourceId, Reason, RowJson FROM dbo.Migration_Rejected
+            WHERE SourceTable IN (SELECT DISTINCT SourceTable FROM #Src)
+            ORDER BY SourceTable, SourceId;
+        OPEN rejected_cursor;
+        FETCH NEXT FROM rejected_cursor INTO @rTable, @rId, @rReason, @rJson;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            PRINT CONCAT(N'NON INSÉRÉE  ', @rTable, N' #', @rId, N' : ', @rReason);
+            SET @rPos = 1;
+            WHILE @rPos <= LEN(@rJson)
+            BEGIN
+                PRINT N'    |' + SUBSTRING(@rJson, @rPos, 900);
+                SET @rPos = @rPos + 900;
+            END
+            FETCH NEXT FROM rejected_cursor INTO @rTable, @rId, @rReason, @rJson;
+        END
+        CLOSE rejected_cursor;
+        DEALLOCATE rejected_cursor;
+        PRINT N'Requête : SELECT SourceTable, SourceId, Reason, RowJson, RejectedAt FROM dbo.Migration_Rejected ORDER BY SourceTable, SourceId;';
+    END
+    ELSE
+        PRINT N'Toutes les lignes chargées ont été insérées (aucune ligne rejetée).';
 END TRY
 BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
@@ -1374,6 +1415,21 @@ GO
 SET NOEXEC OFF;
 GO
 '@)
+
+# Lignes illisibles dans l'export (jamais chargées, donc jamais insérées)
+if ($unreadable.Count -gt 0) {
+    [void]$sb.Append("$nl" + "PRINT N'';$nl")
+    [void]$sb.Append(("PRINT N'=== LIGNES NON INSÉRÉES CAR ILLISIBLES DANS L''EXPORT : {0} ===';" -f $unreadable.Count) + $nl)
+    foreach ($u in $unreadable) {
+        [void]$sb.Append("PRINT " + (ConvertTo-SqlLiteral ("NON INSÉRÉE  {0} : {1}" -f $u.Table, $u.Text)) + ";$nl")
+        if ($null -ne $u.Json) {
+            for ($i = 0; $i -lt $u.Json.Length; $i += 900) {
+                [void]$sb.Append("PRINT " + (ConvertTo-SqlLiteral ('    |' + $u.Json.Substring($i, [Math]::Min(900, $u.Json.Length - $i)))) + ";$nl")
+            }
+        }
+    }
+    [void]$sb.Append("GO$nl")
+}
 
 # UTF-8 avec BOM : accents lus correctement par SSMS et sqlcmd
 [System.IO.File]::WriteAllText($OutputFile, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))

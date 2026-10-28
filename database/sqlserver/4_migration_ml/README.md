@@ -196,7 +196,22 @@ qui n'existe pas (ou plus). Voici les cas pris en charge :
 Avec `-OrphanPolicy Reject` (défaut), ces lignes ne sont pas migrées. Elles sont
 enregistrées dans `dbo.Migration_Rejected`, avec la raison du rejet et la ligne JSON
 d'origine, et le reste est migré. Un message `ATTENTION` indique le nombre de lignes
-rejetées à chaque étape, puis le total à la fin.
+rejetées à chaque étape. Après la validation de la transaction, chaque ligne non
+insérée est affichée dans l'onglet Messages :
+
+```
+=== LIGNES NON INSÉRÉES : 2 (parent introuvable) — conservées dans dbo.Migration_Rejected ===
+NON INSÉRÉE  DocumentClassProjects #1167 : Version introuvable (IdModel 37, IdModelVersion 1)
+    |{"IdAssociation":1167,"IdClass":3,"IdModel":37,"IdModelVersion":1}
+NON INSÉRÉE  TrainTrack #902 : Modèle introuvable (IdModel 997)
+    |{"IdTrainTrack":902,"IdModel":997,...}
+```
+
+Les lignes illisibles dans l'export (fragment JSON invalide, lignes annoncées
+absentes du JSON), qui n'ont jamais pu être chargées, sont listées à la fin du
+script sous `=== LIGNES NON INSÉRÉES CAR ILLISIBLES DANS L'EXPORT ===`. Les logs IHM
+des tables `*_Test` sont écartés volontairement et ne sont pas listés (leur nombre
+est dans le rapport en tête du script).
 
 ```sql
 SELECT SourceTable, SourceId, Reason, RowJson
