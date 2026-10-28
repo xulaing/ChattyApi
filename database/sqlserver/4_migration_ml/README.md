@@ -56,6 +56,11 @@ Prérequis vérifiés au même moment :
   constate que des lignes manquent et s'arrête avant d'écrire.
 - **Une seule fenêtre.** Les données transitent par la table temporaire `#Src`, qui
   n'existe que dans la session : exécuter tout le script dans la même fenêtre.
+- **Réexécution dans la même fenêtre.** Les tables temporaires restent en vie dans
+  la fenêtre SSMS après une exécution. Le script les supprime dans un batch séparé
+  avant le batch de migration, et n'ajoute jamais de colonne à une table temporaire
+  existante. On peut donc relancer le script dans la même fenêtre, y compris après
+  un échec.
 
 | Paramètre | Rôle |
 |---|---|

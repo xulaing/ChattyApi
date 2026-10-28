@@ -590,6 +590,24 @@ foreach ($row in $rowsToLoad) {
 
 # --- Migration (script SQL statique)
 [void]$sb.Append(@'
+/* ---------------------------------------------------------------------
+   Tables de travail d'une exécution précédente dans la même fenêtre SSMS :
+   supprimées dans un batch SÉPARÉ, sinon le batch de migration serait compilé
+   avec leur ancienne structure (« Invalid column name », « already an object »).
+   --------------------------------------------------------------------- */
+IF OBJECT_ID(N'tempdb..#Family') IS NOT NULL DROP TABLE #Family;
+IF OBJECT_ID(N'tempdb..#Model') IS NOT NULL DROP TABLE #Model;
+IF OBJECT_ID(N'tempdb..#Version') IS NOT NULL DROP TABLE #Version;
+IF OBJECT_ID(N'tempdb..#Test') IS NOT NULL DROP TABLE #Test;
+IF OBJECT_ID(N'tempdb..#Train') IS NOT NULL DROP TABLE #Train;
+IF OBJECT_ID(N'tempdb..#Inference') IS NOT NULL DROP TABLE #Inference;
+IF OBJECT_ID(N'tempdb..#DocClass') IS NOT NULL DROP TABLE #DocClass;
+IF OBJECT_ID(N'tempdb..#DocField') IS NOT NULL DROP TABLE #DocField;
+IF OBJECT_ID(N'tempdb..#DocProperty') IS NOT NULL DROP TABLE #DocProperty;
+IF OBJECT_ID(N'tempdb..#DocAssoc') IS NOT NULL DROP TABLE #DocAssoc;
+IF OBJECT_ID(N'tempdb..#DocRequest') IS NOT NULL DROP TABLE #DocRequest;
+IF OBJECT_ID(N'tempdb..#Who') IS NOT NULL DROP TABLE #Who;
+GO
 /* =====================================================================
    MIGRATION : un seul batch, une seule transaction
    ===================================================================== */
@@ -647,7 +665,8 @@ BEGIN TRY
     -- -----------------------------------------------------------------
     SET @Step = N'Lecture : Model';
     SELECT s.Seq, s.SourceTable, j.IdModel AS LegacyId, j.Name, j.ProjectType, j.Creator,
-           j.DateCreate, j.AssociatedSolutionId
+           j.DateCreate, j.AssociatedSolutionId,
+           CAST(NULL AS varchar(20)) AS TaskType           -- calculé plus bas
     INTO #Model
     FROM #Src s
     CROSS APPLY OPENJSON(s.RowJson) WITH (
@@ -661,7 +680,8 @@ BEGIN TRY
            COALESCE(j.IdModelVersion, j.IdModelExtractionVersion, j.IdModelDetectionVersion, j.IdModelSegmentationVersion, j.IdModelDecoupageVersion) AS LegacyId,
            COALESCE(j.IdModel, j.IdModelExtraction, j.IdModelDetection, j.IdModelSegmentation, j.IdModelDecoupage) AS LegacyModelId,
            j.VersionNb, j.DateCreate, j.Creator, j.TrainDataCount, j.ValidDataCount, j.TrainDataPath, j.ModelPath,
-           j.AnnotationFile, j.InProd, j.IsITC, j.Algo, j.Comment
+           j.AnnotationFile, j.InProd, j.IsITC, j.Algo, j.Comment,
+           CAST(NULL AS int) AS ProjectId                  -- calculé plus bas
     INTO #Version
     FROM #Src s
     JOIN #Family f ON f.SourceTable = s.SourceTable AND f.Kind = 'VERSION'
@@ -678,7 +698,8 @@ BEGIN TRY
            COALESCE(j.IdModelVersionTest, j.IdModelExtractionVersionTest, j.IdModelDetectionVersionTest, j.IdModelSegmentationVersionTest, j.IdModelDecoupageVersionTest) AS LegacyId,
            COALESCE(j.IdModelVersion, j.IdModelExtractionVersion, j.IdModelDetectionVersion, j.IdModelSegmentationVersion, j.IdModelDecoupageVersion) AS LegacyVersionId,
            j.VersionNb AS TestNb, j.DateCreate, j.Creator, j.TestDataCount, j.TestDataPath, j.TestResultsPath,
-           j.AnnotationFile, j.IsITC, j.Comment
+           j.AnnotationFile, j.IsITC, j.Comment,
+           CAST(NULL AS int) AS ProjectId, CAST(NULL AS int) AS VersionNumber   -- calculés plus bas
     INTO #Test
     FROM #Src s
     JOIN #Family f ON f.SourceTable = s.SourceTable AND f.Kind = 'TEST'
@@ -696,7 +717,8 @@ BEGIN TRY
            COALESCE(j.IdTrainTrack, j.IdExtractionTrainTrack, j.IdDetectionTrainTrack, j.IdSegmentationTrainTrack) AS LegacyId,
            COALESCE(j.IdModel, j.IdModelExtraction, j.IdModelDetection, j.IdModelSegmentation) AS LegacyModelId,
            j.VersionNb, j.DateStart, j.DateEnd, j.StatusTrain, j.DatasetPath, j.AnnotationFile, j.ModelPath,
-           j.Creator, j.CurrentStep, j.Step, j.Epoch, j.CurrentPhase, j.IsITC
+           j.Creator, j.CurrentStep, j.Step, j.Epoch, j.CurrentPhase, j.IsITC,
+           CAST(NULL AS int) AS ProjectId, CAST(NULL AS varchar(20)) AS StatusCode   -- calculés plus bas
     INTO #Train
     FROM #Src s
     JOIN #Family f ON f.SourceTable = s.SourceTable AND f.Kind = 'TRAIN'
@@ -736,7 +758,8 @@ BEGIN TRY
            COALESCE(j.IdClass, j.IdDocumentClass) AS LegacyClassId,
            COALESCE(j.NameField, j.Name) AS Name, COALESCE(j.DescriptionField, j.Description) AS Description,
            COALESCE(j.CreatorField, j.Creator) AS Creator, COALESCE(j.DateCreateField, j.DateCreate) AS DateCreate,
-           COALESCE(j.UpdaterField, j.Updater) AS Updater, COALESCE(j.DateUpdateField, j.DateUpdate) AS DateUpdate
+           COALESCE(j.UpdaterField, j.Updater) AS Updater, COALESCE(j.DateUpdateField, j.DateUpdate) AS DateUpdate,
+           CAST(NULL AS int) AS DocumentClassId            -- calculé plus bas
     INTO #DocField
     FROM #Src s
     CROSS APPLY OPENJSON(s.RowJson) WITH (
@@ -761,7 +784,8 @@ BEGIN TRY
 
     SELECT s.Seq, s.SourceTable,
            COALESCE(j.IdClass, j.IdDocumentClass, j.IdField, j.IdDocumentField, j.IdProperty, j.IdDocumentProperty) AS LegacyItemId,
-           j.IdModel AS LegacyModelId, j.IdModelVersion AS LegacyVersionRef
+           j.IdModel AS LegacyModelId, j.IdModelVersion AS LegacyVersionRef,
+           CAST(NULL AS int) AS ProjectVersionId, CAST(NULL AS int) AS ItemId   -- calculés plus bas
     INTO #DocAssoc
     FROM #Src s
     CROSS APPLY OPENJSON(s.RowJson) WITH (
@@ -822,7 +846,6 @@ BEGIN TRY
     -- comparé sans casse ni accents au code et au libellé de [Ref_TaskType] ;
     -- à défaut, famille des tables de versions qui référencent le modèle.
     SET @Step = N'Contrôle : type de tâche des modèles';
-    ALTER TABLE #Model ADD TaskType varchar(20) NULL;
     UPDATE m SET TaskType = COALESCE(
         (SELECT TOP (1) r.Code FROM dbo.Ref_TaskType r
          WHERE LTRIM(RTRIM(m.ProjectType)) COLLATE Latin1_General_CI_AI IN (r.Code COLLATE Latin1_General_CI_AI, r.Label COLLATE Latin1_General_CI_AI)),
@@ -893,7 +916,6 @@ BEGIN TRY
 
     -- 2. Model*_Version -> Project_Version -----------------------------
     SET @Step = N'Model*_Version -> Project_Version';
-    ALTER TABLE #Version ADD ProjectId int NULL;
     UPDATE v SET ProjectId = mp.TargetId
     FROM #Version v
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'Model' AND mp.SourceId = v.LegacyModelId;
@@ -947,7 +969,6 @@ BEGIN TRY
 
     -- 4. Model*_Version_Test -> Evaluation ------------------------------
     SET @Step = N'Model*_Version_Test -> Evaluation';
-    ALTER TABLE #Test ADD ProjectId int NULL, VersionNumber int NULL;
     UPDATE t SET ProjectId = pv.ProjectId, VersionNumber = pv.VersionNumber
     FROM #Test t
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = t.VersionTable AND mp.SourceId = t.LegacyVersionId
@@ -992,7 +1013,6 @@ BEGIN TRY
 
     -- 6. *TrainTrack -> Training_Run -----------------------------------
     SET @Step = N'*TrainTrack -> Training_Run';
-    ALTER TABLE #Train ADD ProjectId int NULL, StatusCode varchar(20) NULL;
     UPDATE r SET ProjectId = mp.TargetId
     FROM #Train r
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'Model' AND mp.SourceId = r.LegacyModelId;
@@ -1088,7 +1108,6 @@ BEGIN TRY
 
     -- 9. DocumentField -> Document_Field (rapprochement par classe + nom) -
     SET @Step = N'DocumentField -> Document_Field';
-    ALTER TABLE #DocField ADD DocumentClassId int NULL;
     UPDATE f SET DocumentClassId = mp.TargetId
     FROM #DocField f
     JOIN dbo.Migration_LegacyMap mp ON mp.SourceTable = N'DocumentClass' AND mp.SourceId = f.LegacyClassId;
@@ -1137,7 +1156,6 @@ BEGIN TRY
     --     IdModelVersion désigne la version : d'abord comme identifiant de version
     --     (tables Model*_Version) rattaché au même IdModel, sinon comme numéro de version.
     SET @Step = N'Document*Projects -> Project_Version_Document_*';
-    ALTER TABLE #DocAssoc ADD ProjectVersionId int NULL, ItemId int NULL;
     UPDATE a SET ProjectVersionId = COALESCE(
         (SELECT TOP (1) mp.TargetId FROM dbo.Migration_LegacyMap mp
          WHERE mp.TargetTable = N'Project_Version' AND mp.SourceId = a.LegacyVersionRef AND mp.SourceParentId = a.LegacyModelId
@@ -1216,6 +1234,18 @@ IF OBJECT_ID(N'tempdb..#Src') IS NOT NULL DROP TABLE #Src;
 IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
+IF OBJECT_ID(N'tempdb..#Family') IS NOT NULL DROP TABLE #Family;
+IF OBJECT_ID(N'tempdb..#Model') IS NOT NULL DROP TABLE #Model;
+IF OBJECT_ID(N'tempdb..#Version') IS NOT NULL DROP TABLE #Version;
+IF OBJECT_ID(N'tempdb..#Test') IS NOT NULL DROP TABLE #Test;
+IF OBJECT_ID(N'tempdb..#Train') IS NOT NULL DROP TABLE #Train;
+IF OBJECT_ID(N'tempdb..#Inference') IS NOT NULL DROP TABLE #Inference;
+IF OBJECT_ID(N'tempdb..#DocClass') IS NOT NULL DROP TABLE #DocClass;
+IF OBJECT_ID(N'tempdb..#DocField') IS NOT NULL DROP TABLE #DocField;
+IF OBJECT_ID(N'tempdb..#DocProperty') IS NOT NULL DROP TABLE #DocProperty;
+IF OBJECT_ID(N'tempdb..#DocAssoc') IS NOT NULL DROP TABLE #DocAssoc;
+IF OBJECT_ID(N'tempdb..#DocRequest') IS NOT NULL DROP TABLE #DocRequest;
+IF OBJECT_ID(N'tempdb..#Who') IS NOT NULL DROP TABLE #Who;
 GO
 -- Toujours exécuté (même après SET NOEXEC ON) : la fenêtre SSMS reste utilisable.
 SET NOEXEC OFF;
