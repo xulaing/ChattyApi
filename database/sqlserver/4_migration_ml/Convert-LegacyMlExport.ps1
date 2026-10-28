@@ -52,7 +52,8 @@
 
 .EXAMPLE
     .\Convert-LegacyMlExport.ps1 -InputFile .\export_ancienne_base.txt -Strict
-    sqlcmd -S MONSERVEUR -d MABASE -b -i .\export_ancienne_base_migration.sql
+    Puis, dans SSMS : Nouvelle requête sur la base cible, ouvrir
+    .\export_ancienne_base_migration.sql et l'exécuter (F5).
 #>
 [CmdletBinding()]
 param(
@@ -435,7 +436,7 @@ if (-not $OutputFile) {
 function ConvertTo-SqlLiteral([string]$Value) {
     $v = $Value.Replace("'", "''")
     if ($v.Contains('$(')) {
-        # sqlcmd interprète $(...) comme une variable : on coupe la séquence.
+        # sqlcmd (et SSMS en mode SQLCMD) interprète $(...) comme une variable : on coupe la séquence.
         # CONVERT(nvarchar(max)) évite la troncature à 4000 caractères de la concaténation.
         $parts = $v -split [regex]::Escape('$(')
         # Résultat : CONVERT(nvarchar(max), N'...$') + N'(...'
@@ -452,10 +453,30 @@ $nl = "`r`n"
    Généré le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') par Convert-LegacyMlExport.ps1
    Source : $([System.IO.Path]::GetFileName($InputFile))
 
-   Prérequis : scripts 1_tables déployés.
-   Exécution : sqlcmd -b -i <ce fichier>   (ou SSMS ; une seule session)
-   Rejouable : les lignes déjà migrées (dbo.Migration_LegacyMap) ne sont pas recopiées.
-   Transaction unique : si une table échoue, aucune donnée n'est écrite.
+   EXÉCUTION DANS SSMS
+     1. Nouvelle requête, connectée à la BASE CIBLE (vérifier la liste déroulante
+        des bases : le script n'a pas de USE).
+     2. Ouvrir ce fichier (ou le coller) et exécuter tout le script (F5).
+     3. Lire l'onglet Messages : contrôles, lignes insérées par table, puis
+        « MIGRATION TERMINÉE » ou « MIGRATION ANNULÉE ».
+     Le mode SQLCMD n'est pas nécessaire (sqlcmd -b -i fonctionne aussi).
+
+   DROITS NÉCESSAIRES (vérifiés avant toute écriture)
+     - SELECT et INSERT sur les tables cibles et dbo.Migration_LegacyMap,
+       SELECT sur dbo.[User] et dbo.Ref_TaskType ;
+     - facultatif : ALTER sur dbo.Project et dbo.Project_Version, pour suspendre
+       les triggers d'historique pendant la migration. Sans ce droit, la migration
+       a lieu quand même, et chaque projet / version migré apparaît dans
+       Project_History (« a été créé »).
+     Aucun droit de création d'objet n'est nécessaire : seules des tables
+     temporaires (#) sont créées. Les scripts 1_tables (dont 19_Migration_LegacyMap)
+     doivent avoir été déployés au préalable.
+
+   SÉCURITÉ
+     - Contrôle préalable : s'il manque un droit, une table ou une colonne, le
+       script s'arrête avant d'écrire quoi que ce soit (SET NOEXEC ON).
+     - Transaction unique : si une table échoue, aucune donnée n'est écrite.
+     - Rejouable : les lignes déjà migrées (dbo.Migration_LegacyMap) ne sont pas recopiées.
 
    Contrôle de l'export :
 "@ + $nl)
@@ -466,38 +487,76 @@ foreach ($r in $report) {
 
 # --- Préambule : vérifications, table de correspondance, tables de chargement
 [void]$sb.Append(@'
+SET NOEXEC OFF;   -- au cas où une exécution précédente dans la même fenêtre SSMS l'aurait laissé à ON
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 SET ANSI_NULLS ON;
 SET QUOTED_IDENTIFIER ON;
 GO
--- Le schéma cible doit être à jour (scripts 1_tables)
+/* ---------------------------------------------------------------------
+   CONTRÔLE PRÉALABLE : rien n'est écrit tant que tout n'est pas vérifié.
+   Dans SSMS, une erreur n'arrête pas les batches suivants : en cas de
+   problème, SET NOEXEC ON désactive l'exécution de tout le reste du script.
+   --------------------------------------------------------------------- */
+DECLARE @nl nchar(2) = NCHAR(13) + NCHAR(10);
+DECLARE @Err nvarchar(4000) = N'';
+
+PRINT CONCAT(N'Base cible : ', DB_NAME(), N'   -   Serveur : ', @@SERVERNAME, N'   -   Connecté en tant que : ', SUSER_SNAME());
+
+-- Version et niveau de compatibilité (OPENJSON exige le niveau 130, STRING_AGG SQL Server 2017)
+IF CONVERT(int, SERVERPROPERTY('ProductMajorVersion')) < 14
+    SET @Err += N'  - SQL Server 2017 ou plus récent requis.' + @nl;
+IF (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID()) < 130
+    SET @Err += CONCAT(N'  - Niveau de compatibilité de la base trop bas (',
+                       (SELECT compatibility_level FROM sys.databases WHERE database_id = DB_ID()),
+                       N') : 130 minimum pour OPENJSON. À modifier par un administrateur.', @nl,
+                       N'    (Les erreurs « Incorrect syntax » affichées ensuite en découlent : SQL Server analyse', @nl,
+                       N'     les batches suivants sans les exécuter. Aucune donnée n''est écrite.)', @nl);
+
+-- Schéma cible (scripts 1_tables)
 IF COL_LENGTH(N'dbo.Project', N'Category') IS NULL
    OR COL_LENGTH(N'dbo.Training_Run', N'ProjectId') IS NULL
    OR COL_LENGTH(N'dbo.Evaluation', N'IsItc') IS NULL
    OR OBJECT_ID(N'dbo.Inference_Request', N'U') IS NULL
    OR OBJECT_ID(N'dbo.Document_Request', N'U') IS NULL
+   OR OBJECT_ID(N'dbo.Migration_LegacyMap', N'U') IS NULL
+    SET @Err += N'  - Schéma cible incomplet (ou mauvaise base sélectionnée) : déployer d''abord les scripts 1_tables, dont 19_Migration_LegacyMap.' + @nl;
+
+-- Droits
+SELECT @Err += CONCAT(N'  - Droit ', p.Perm, N' manquant sur ', p.Obj, @nl)
+FROM (VALUES
+    (N'dbo.Project', N'SELECT'), (N'dbo.Project', N'INSERT'),
+    (N'dbo.Project_Version', N'SELECT'), (N'dbo.Project_Version', N'INSERT'),
+    (N'dbo.Project_Version_Metric', N'SELECT'), (N'dbo.Project_Version_Metric', N'INSERT'),
+    (N'dbo.Evaluation', N'SELECT'), (N'dbo.Evaluation', N'INSERT'),
+    (N'dbo.Evaluation_Metric', N'SELECT'), (N'dbo.Evaluation_Metric', N'INSERT'),
+    (N'dbo.Training_Run', N'SELECT'), (N'dbo.Training_Run', N'INSERT'),
+    (N'dbo.Inference_Request', N'SELECT'), (N'dbo.Inference_Request', N'INSERT'),
+    (N'dbo.Document_Class', N'SELECT'), (N'dbo.Document_Class', N'INSERT'),
+    (N'dbo.Document_Field', N'SELECT'), (N'dbo.Document_Field', N'INSERT'),
+    (N'dbo.Document_Property', N'SELECT'), (N'dbo.Document_Property', N'INSERT'),
+    (N'dbo.Project_Version_Document_Class', N'SELECT'), (N'dbo.Project_Version_Document_Class', N'INSERT'),
+    (N'dbo.Project_Version_Document_Field', N'SELECT'), (N'dbo.Project_Version_Document_Field', N'INSERT'),
+    (N'dbo.Project_Version_Document_Property', N'SELECT'), (N'dbo.Project_Version_Document_Property', N'INSERT'),
+    (N'dbo.Document_Request', N'SELECT'), (N'dbo.Document_Request', N'INSERT'),
+    (N'dbo.Migration_LegacyMap', N'SELECT'), (N'dbo.Migration_LegacyMap', N'INSERT'),
+    (N'dbo.[User]', N'SELECT'), (N'dbo.Ref_TaskType', N'SELECT')
+) p (Obj, Perm)
+WHERE OBJECT_ID(p.Obj) IS NOT NULL
+  AND ISNULL(HAS_PERMS_BY_NAME(p.Obj, N'OBJECT', p.Perm), 0) = 0;
+
+IF @Err <> N''
 BEGIN
-    RAISERROR (N'Schéma cible incomplet : déployer d''abord les scripts 1_tables.', 16, 1);
+    PRINT N'=== MIGRATION IMPOSSIBLE : aucune donnée écrite ===';
+    PRINT @Err;
+    RAISERROR (N'Contrôle préalable en échec (voir les messages ci-dessus). Le reste du script n''est pas exécuté.', 16, 1);
     SET NOEXEC ON;
 END
-GO
--- Correspondance ancien Id -> nouvel Id : rend la migration rejouable et garde la traçabilité.
--- (Pas de clé étrangère ni de CHECK : elle est alimentée par des clauses OUTPUT INTO.)
-IF OBJECT_ID(N'dbo.Migration_LegacyMap', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.Migration_LegacyMap (
-        SourceTable    nvarchar(128)    NOT NULL,
-        SourceId       bigint           NOT NULL,
-        SourceParentId bigint           NULL,
-        TargetTable    nvarchar(128)    NOT NULL,
-        TargetId       int              NULL,
-        TargetGuid     uniqueidentifier NULL,
-        MigratedAt     datetime2(7)     NOT NULL CONSTRAINT DF_Migration_LegacyMap_MigratedAt DEFAULT (SYSDATETIME()),
-        CONSTRAINT PK_Migration_LegacyMap PRIMARY KEY CLUSTERED (SourceTable, SourceId)
-    );
-    PRINT N'Table dbo.Migration_LegacyMap créée.';
-END
+ELSE IF ISNULL(HAS_PERMS_BY_NAME(N'dbo.Project', N'OBJECT', N'ALTER'), 0) = 0
+     OR ISNULL(HAS_PERMS_BY_NAME(N'dbo.Project_Version', N'OBJECT', N'ALTER'), 0) = 0
+    PRINT N'Information : pas de droit ALTER sur dbo.Project / dbo.Project_Version : les triggers d''historique restent actifs, chaque projet / version migré sera tracé dans Project_History.';
+ELSE
+    PRINT N'Contrôle préalable OK.';
 GO
 IF OBJECT_ID(N'tempdb..#Src') IS NOT NULL DROP TABLE #Src;
 CREATE TABLE #Src (Seq int IDENTITY(1, 1) PRIMARY KEY, SourceTable nvarchar(128) NOT NULL, RowJson nvarchar(max) NOT NULL);
@@ -804,9 +863,16 @@ BEGIN TRY
     -- Les triggers d'historique d'insertion sont suspendus : chaque projet / version migré
     -- créerait sinon une entrée « a été créé(e) » datée du jour de la migration.
     -- Réactivés avant le COMMIT ; en cas d'erreur, le ROLLBACK annule aussi leur désactivation.
+    -- Nécessite le droit ALTER sur les tables : sans ce droit, les triggers restent actifs.
     SET @Step = N'Suspension des triggers d''insertion';
-    IF OBJECT_ID(N'dbo.trg_Project_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project DISABLE TRIGGER trg_Project_Insert;
-    IF OBJECT_ID(N'dbo.trg_ProjectVersion_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project_Version DISABLE TRIGGER trg_ProjectVersion_Insert;
+    DECLARE @CanAlter bit = CASE WHEN ISNULL(HAS_PERMS_BY_NAME(N'dbo.Project', N'OBJECT', N'ALTER'), 0) = 1
+                                  AND ISNULL(HAS_PERMS_BY_NAME(N'dbo.Project_Version', N'OBJECT', N'ALTER'), 0) = 1
+                                 THEN 1 ELSE 0 END;
+    IF @CanAlter = 1
+    BEGIN
+        IF OBJECT_ID(N'dbo.trg_Project_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project DISABLE TRIGGER trg_Project_Insert;
+        IF OBJECT_ID(N'dbo.trg_ProjectVersion_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project_Version DISABLE TRIGGER trg_ProjectVersion_Insert;
+    END
 
     -- 1. Model -> Project ----------------------------------------------
     SET @Step = N'Model -> Project';
@@ -1130,8 +1196,11 @@ BEGIN TRY
 
     -- Réactivation des triggers ------------------------------------------
     SET @Step = N'Réactivation des triggers d''insertion';
-    IF OBJECT_ID(N'dbo.trg_Project_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project ENABLE TRIGGER trg_Project_Insert;
-    IF OBJECT_ID(N'dbo.trg_ProjectVersion_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project_Version ENABLE TRIGGER trg_ProjectVersion_Insert;
+    IF @CanAlter = 1
+    BEGIN
+        IF OBJECT_ID(N'dbo.trg_Project_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project ENABLE TRIGGER trg_Project_Insert;
+        IF OBJECT_ID(N'dbo.trg_ProjectVersion_Insert', N'TR') IS NOT NULL ALTER TABLE dbo.Project_Version ENABLE TRIGGER trg_ProjectVersion_Insert;
+    END
 
     COMMIT TRANSACTION;
     PRINT N'=== MIGRATION TERMINÉE : transaction validée ===';
@@ -1148,9 +1217,12 @@ IF OBJECT_ID(N'tempdb..#Expected') IS NOT NULL DROP TABLE #Expected;
 IF OBJECT_ID(N'tempdb..#StatusMap') IS NOT NULL DROP TABLE #StatusMap;
 IF OBJECT_ID(N'tempdb..#MetricKey') IS NOT NULL DROP TABLE #MetricKey;
 GO
+-- Toujours exécuté (même après SET NOEXEC ON) : la fenêtre SSMS reste utilisable.
+SET NOEXEC OFF;
+GO
 '@)
 
-# UTF-8 avec BOM : lu correctement par sqlcmd et SSMS
+# UTF-8 avec BOM : accents lus correctement par SSMS et sqlcmd
 [System.IO.File]::WriteAllText($OutputFile, $sb.ToString(), (New-Object System.Text.UTF8Encoding($true)))
 Write-Host ("Script SQL généré : {0} ({1} ligne(s) à migrer)" -f $OutputFile, $rowsToLoad.Count) -ForegroundColor Green
 if ($problems -gt 0) {

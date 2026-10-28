@@ -12,6 +12,8 @@ base déjà livrée.
      `05_Project_Version` → `06_Project_Member` → `07_Evaluation`
    - `08` à `18` — tables des modèles entraînés (métriques, entraînements,
      inférences, référentiel documentaire, demandes)
+   - `19_Migration_LegacyMap` — correspondance ancien Id → nouvel Id de la reprise
+     des données (`4_migration_ml`)
 2. **`2_procedures/`** — triggers et procédures de l'application. Exécutés
    après toutes les tables, car ils écrivent dans `Project_History` et lisent `User`.
 3. **`3_init/`** — données d'initialisation (équipes H620, H600, H500).

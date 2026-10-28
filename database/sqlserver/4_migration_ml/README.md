@@ -9,9 +9,53 @@ Reprise ponctuelle des données de l'ancienne base (28 tables `Model*`,
 # 1. Contrôle de l'export et génération du script SQL
 .\Convert-LegacyMlExport.ps1 -InputFile .\export_ancienne_base.txt -Strict
 
-# 2. Exécution sur la base cible (schéma 1_tables déjà déployé)
-sqlcmd -S <serveur> -d <base> -b -i .\export_ancienne_base_migration.sql
 ```
+
+Puis exécuter le script généré `export_ancienne_base_migration.sql` dans SSMS :
+
+1. **Nouvelle requête** connectée à la **base cible**. Le script ne contient pas de
+   `USE` : vérifier la base sélectionnée dans la liste déroulante. Le nom de la base
+   et le compte utilisé sont affichés en tête des messages.
+2. Ouvrir le fichier, ou le coller, puis exécuter **tout** le script (F5).
+3. Lire l'onglet **Messages** : contrôle préalable, lignes insérées par table, puis
+   `MIGRATION TERMINÉE` ou `MIGRATION ANNULÉE`.
+
+Le mode SQLCMD n'est pas nécessaire. `sqlcmd -S <serveur> -d <base> -b -i <fichier>`
+fonctionne aussi.
+
+### Droits nécessaires
+
+Les scripts `1_tables` doivent avoir été déployés au préalable par un compte ayant
+les droits DDL, y compris `19_Migration_LegacyMap.sql`. Le script de migration ne
+crée ensuite **aucun objet permanent** : il utilise uniquement des tables
+temporaires `#`. Il lui faut :
+
+| Droit | Objets | Si absent |
+|---|---|---|
+| `SELECT` + `INSERT` | les 14 tables cibles et `dbo.Migration_LegacyMap` | arrêt avant toute écriture, avec la liste des droits manquants |
+| `SELECT` | `dbo.[User]`, `dbo.Ref_TaskType` | arrêt avant toute écriture |
+| `ALTER` *(facultatif)* | `dbo.Project`, `dbo.Project_Version` | la migration a lieu quand même, mais les triggers d'historique restent actifs : chaque projet / version migré apparaît dans `Project_History` (« a été créé ») |
+
+Un rôle `db_datareader` + `db_datawriter` suffit, sans le droit `ALTER`.
+
+Prérequis vérifiés au même moment :
+- SQL Server 2017 ou plus récent ;
+- niveau de compatibilité de la base ≥ 130, nécessaire pour `OPENJSON` ;
+- schéma cible à jour, ce qui détecte aussi une mauvaise base sélectionnée.
+
+### Comportement dans SSMS
+
+- **Arrêt avant écriture.** Dans SSMS, une erreur n'arrête pas les batches suivants.
+  Si le contrôle préalable échoue, le script passe donc en `SET NOEXEC ON` : plus rien
+  n'est exécuté. Le dernier batch remet `SET NOEXEC OFF` pour que la fenêtre reste
+  utilisable.
+- **Niveau de compatibilité insuffisant.** SQL Server analyse quand même les batches
+  suivants : les erreurs « Incorrect syntax » qui s'affichent en découlent, et
+  aucune donnée n'est écrite.
+- **Chargement interrompu.** Si un batch de chargement échoue, le batch de migration
+  constate que des lignes manquent et s'arrête avant d'écrire.
+- **Une seule fenêtre.** Les données transitent par la table temporaire `#Src`, qui
+  n'existe que dans la session : exécuter tout le script dans la même fenêtre.
 
 | Paramètre | Rôle |
 |---|---|
@@ -78,14 +122,13 @@ sur une table migrée bloque la génération du script SQL.
 - **Transaction unique :** les 14 tables cibles sont alimentées dans **une seule
   transaction**. Si une table échoue, tout est annulé (`XACT_ABORT` + `TRY/CATCH`).
   Le message indique l'étape et les lignes en cause.
-- **Rejouable :** `dbo.Migration_LegacyMap` (créée si besoin) garde la correspondance
+- **Rejouable :** `dbo.Migration_LegacyMap` (créée par `1_tables/19_Migration_LegacyMap.sql`) garde la correspondance
   `(table source, ancien Id) → nouvel Id`. Une ligne déjà migrée n'est jamais recopiée,
   ce qui permet de relancer avec un export complété.
-- **Historique :** les triggers d'insertion (`trg_Project_Insert`,
-  `trg_ProjectVersion_Insert`) sont suspendus pendant la transaction. Sans cela,
-  chaque élément migré créerait une entrée « a été créé » datée du jour de la migration.
-- **Exécution :** dans une seule session (sqlcmd ou SSMS), car `#Src` est une table
-  temporaire.
+- **Historique :** avec le droit `ALTER`, les triggers d'insertion
+  (`trg_Project_Insert`, `trg_ProjectVersion_Insert`) sont suspendus pendant la
+  transaction. Sans cela, chaque élément migré crée une entrée « a été créé » datée
+  du jour de la migration.
 
 ### Correspondances
 
